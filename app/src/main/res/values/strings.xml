@@ -1,0 +1,18 @@
+<resources>
+    <string name="app_name">Rewards Node</string>
+    <string name="title_dashboard">Microsoft Rewards Automation Node</string>
+    <string name="title_accounts">Danh Sách Profile Tài Khoản</string>
+    <string name="title_settings">Cài Đặt Node</string>
+    <string name="btn_add_account">+ Thêm Tài Khoản Mới</string>
+    <string name="btn_start_node">Bật Chạy Node Ngầm</string>
+    <string name="btn_stop_node">Dừng Chạy Node</string>
+    <string name="status_idle">Trạng thái: Đang chờ</string>
+    <string name="status_running">Trạng thái: Đang chạy tìm kiếm...</string>
+    <string name="status_cooldown">Trạng thái: Đang nghỉ Cooldown 15p...</string>
+    <string name="login_title">Đăng Nhập Microsoft &amp; Xác Thực 2FA</string>
+    <string name="login_hint">Hãy đăng nhập tài khoản Microsoft của bạn. Khi đăng nhập thành công về trang Bing hoặc tài khoản, phiên đăng nhập sẽ tự động được lưu.</string>
+    <string name="btn_save_session">Lưu Phiên Đăng Nhập</string>
+    <string name="btn_cancel">Hủy</string>
+    <string name="pref_proxy_title">Cấu hình Proxy</string>
+    <string name="pref_telegram_title">Cấu hình Telegram Bot</string>
+</resources>
