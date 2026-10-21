@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 4dp Grid System Spacing -->
+    <dimen name="spacing_2">2dp</dimen>
+    <dimen name="spacing_4">4dp</dimen>
+    <dimen name="spacing_8">8dp</dimen>
+    <dimen name="spacing_12">12dp</dimen>
+    <dimen name="spacing_16">16dp</dimen>
+    <dimen name="spacing_20">20dp</dimen>
+    <dimen name="spacing_24">24dp</dimen>
+    <dimen name="spacing_28">28dp</dimen>
+    <dimen name="spacing_32">32dp</dimen>
+    <dimen name="spacing_36">36dp</dimen>
+    <dimen name="spacing_40">40dp</dimen>
+    <dimen name="spacing_48">48dp</dimen>
+    <dimen name="spacing_56">56dp</dimen>
+    <dimen name="spacing_64">64dp</dimen>
+
+    <!-- Semantic Spacing Aliases -->
+    <dimen name="spacing_xxs">2dp</dimen>
+    <dimen name="spacing_xs">4dp</dimen>
+    <dimen name="spacing_sm">8dp</dimen>
+    <dimen name="spacing_md">16dp</dimen>
+    <dimen name="spacing_lg">24dp</dimen>
+    <dimen name="spacing_xl">32dp</dimen>
+    <dimen name="spacing_xxl">48dp</dimen>
+
+    <!-- Lề an toàn (Safe Margin 20dp) -->
+    <dimen name="margin_safe">20dp</dimen>
+    <dimen name="safe_margin">20dp</dimen>
+    <dimen name="screen_safe_margin">20dp</dimen>
+    <dimen name="screen_margin_horizontal">20dp</dimen>
+    <dimen name="screen_padding_horizontal">20dp</dimen>
+
+    <!-- Touch Targets (WCAG 2.1 AA Compliance: min 48dp) -->
+    <dimen name="min_touch_target">48dp</dimen>
+    <dimen name="touch_target_min">48dp</dimen>
+
+    <!-- Corner Radii Tokens -->
+    <dimen name="corner_radius_xs">4dp</dimen>
+    <dimen name="corner_radius_sm">8dp</dimen>
+    <dimen name="corner_radius_md">12dp</dimen>
+    <dimen name="corner_radius_card">16dp</dimen>
+    <dimen name="corner_radius_bento">16dp</dimen>
+    <dimen name="corner_radius_pill">20dp</dimen>
+    <dimen name="corner_radius_hero">30dp</dimen>
+    <dimen name="corner_radius_full">999dp</dimen>
+
+    <!-- Component Sizing -->
+    <dimen name="hero_button_height">56dp</dimen>
+    <dimen name="pill_height">36dp</dimen>
+    <dimen name="badge_height">24dp</dimen>
+    <dimen name="bottom_nav_height">64dp</dimen>
+    <dimen name="card_stroke_width">1dp</dimen>
+    <dimen name="card_elevation_fluent">2dp</dimen>
+    <dimen name="card_elevation_hover">6dp</dimen>
+
+    <!-- Icon Dimensions -->
+    <dimen name="icon_xs">14dp</dimen>
+    <dimen name="icon_sm">18dp</dimen>
+    <dimen name="icon_md">24dp</dimen>
+    <dimen name="icon_lg">32dp</dimen>
+    <dimen name="icon_xl">48dp</dimen>
+
+    <!-- Typography Scale -->
+    <dimen name="text_size_badge">11sp</dimen>
+    <dimen name="text_size_caption">12sp</dimen>
+    <dimen name="text_size_body_sm">13sp</dimen>
+    <dimen name="text_size_body">14sp</dimen>
+    <dimen name="text_size_subtitle">16sp</dimen>
+    <dimen name="text_size_title">20sp</dimen>
+    <dimen name="text_size_headline">24sp</dimen>
+    <dimen name="text_size_hero">32sp</dimen>
+</resources>

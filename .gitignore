@@ -10,3 +10,25 @@
 .cxx
 local.properties
 .brain
+
+# Android Pure SDK Build Artifacts
+*.apk
+*.idsig
+classes_out/
+dex_out/
+compiled_res.zip
+base.apk
+unaligned.apk
+test_classes_out/
+gen/
+
+# Secrets, Local DBs & Temporary Dumps
+*.keystore
+*.jks
+*.db
+*.db-shm
+*.db-wal
+*.html
+*.png
+*.jpg
+scratch/

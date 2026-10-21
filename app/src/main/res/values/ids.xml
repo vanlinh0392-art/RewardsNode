@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="ringDashboard" type="id" />
+    <item name="activityRingView" type="id" />
+    <item name="tvPcBasket" type="id" />
+    <item name="tvEdgeBasket" type="id" />
+    <item name="tvMobileBasket" type="id" />
+    <item name="switchAccountEnabled" type="id" />
+    <item name="tvPcBadge" type="id" />
+    <item name="tvEdgeBadge" type="id" />
+    <item name="tvMobBadge" type="id" />
+    <item name="tvDeltaToday" type="id" />
+    <item name="tvDailySetBadge" type="id" />
+    <item name="tvClaimBadge" type="id" />
+    <item name="btnRefreshPoints" type="id" />
+    <item name="tvProxyChip" type="id" />
+    <item name="tvBasketPc" type="id" />
+    <item name="tvBasketMobile" type="id" />
+    <item name="tvBasketEdge" type="id" />
+    <item name="tvAccountProgress" type="id" />
+    <item name="tvAccountProxy" type="id" />
+    <item name="rootItemAccount" type="id" />
+</resources>

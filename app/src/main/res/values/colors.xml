@@ -1,11 +1,96 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Microsoft Brand Tokens -->
+    <color name="edge_blue">#0078D4</color>
+    <color name="edge_blue_dark">#005A9E</color>
+    <color name="edge_blue_light">#2B88D8</color>
+    <color name="edge_blue_surface">#EBF3FC</color>
+
+    <color name="bing_cyan">#00A4EF</color>
+    <color name="bing_cyan_dark">#0082BE</color>
+    <color name="bing_cyan_light">#50E6FF</color>
+    <color name="bing_cyan_surface">#E0F2FE</color>
+
+    <!-- Tailwind / Fluent Slate Color Ramp -->
+    <color name="slate_50">#F8FAFC</color>
+    <color name="slate_100">#F1F5F9</color>
+    <color name="slate_200">#E2E8F0</color>
+    <color name="slate_300">#CBD5E1</color>
+    <color name="slate_400">#94A3B8</color>
+    <color name="slate_500">#64748B</color>
+    <color name="slate_600">#475569</color>
+    <color name="slate_700">#334155</color>
+    <color name="slate_800">#1E293B</color>
+    <color name="slate_900">#0F172A</color>
+    <color name="slate_950">#020617</color>
+
+    <!-- AMOLED & High Contrast -->
+    <color name="amoled_black">#000000</color>
+    <color name="pure_white">#FFFFFF</color>
+
+    <!-- 6 Pill Filter Colors (Vlog Filter System) -->
+    <!-- ALL: Tất cả logs -->
+    <color name="pill_all">#0078D4</color>
+    <color name="pill_all_bg">#EBF3FC</color>
+    <color name="pill_all_border">#90C2EB</color>
+
+    <!-- ERR: Lỗi & Exception -->
+    <color name="pill_err">#EF4444</color>
+    <color name="pill_err_bg">#FEF2F2</color>
+    <color name="pill_err_border">#FECACA</color>
+
+    <!-- DOM: Thao tác giao diện WebView / DOM Event -->
+    <color name="pill_dom">#8B5CF6</color>
+    <color name="pill_dom_bg">#F5F3FF</color>
+    <color name="pill_dom_border">#DDD6FE</color>
+
+    <!-- SRCH: Tiến trình Bing Search Engine -->
+    <color name="pill_srch">#00A4EF</color>
+    <color name="pill_srch_bg">#E0F2FE</color>
+    <color name="pill_srch_border">#BAE6FD</color>
+
+    <!-- NET: Network, Proxy & Socket -->
+    <color name="pill_net">#10B981</color>
+    <color name="pill_net_bg">#ECFDF5</color>
+    <color name="pill_net_border">#A7F3D0</color>
+
+    <!-- COOL: Cooldown, Sleep & Delay Timers -->
+    <color name="pill_cool">#F59E0B</color>
+    <color name="pill_cool_bg">#FFFBEB</color>
+    <color name="pill_cool_border">#FDE68A</color>
+
+    <!-- Badges -->
+    <color name="badge_gold">#F59E0B</color>
+    <color name="badge_gold_bg">#FEF3C7</color>
+    <color name="badge_gold_border">#FCD34D</color>
+
+    <color name="badge_search">#0078D4</color>
+    <color name="badge_search_bg">#EBF3FC</color>
+    <color name="badge_search_border">#90C2EB</color>
+
+    <color name="badge_success">#107C41</color>
+    <color name="badge_success_bg">#E6F4EA</color>
+    <color name="badge_success_border">#A3D9B5</color>
+
+    <color name="badge_error">#D83B01</color>
+    <color name="badge_error_bg">#FDE7E9</color>
+    <color name="badge_error_border">#F8B7BC</color>
+
+    <!-- Fluent UI Surfaces & Borders -->
+    <color name="card_bg_fluent">#FFFFFF</color>
+    <color name="card_stroke">#E2E8F0</color>
+    <color name="card_stroke_subtle">#F1F5F9</color>
+    <color name="divider_fluent">#E2E8F0</color>
+
+    <!-- Legacy / Compatibility Tokens -->
     <color name="primary">#0078D4</color>
     <color name="primary_dark">#005A9E</color>
     <color name="accent">#00A4EF</color>
-    <color name="background">#F3F4F6</color>
+    <color name="background">#F8FAFC</color>
     <color name="card_bg">#FFFFFF</color>
-    <color name="text_primary">#1F2937</color>
-    <color name="text_secondary">#4B5563</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#64748B</color>
+    <color name="text_muted">#94A3B8</color>
     <color name="success">#107C41</color>
     <color name="warning">#D83B01</color>
 </resources>

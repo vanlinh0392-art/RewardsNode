@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:paddingHorizontal="8dp"
+    android:paddingVertical="4dp">
+
+    <!-- Timestamp -->
+    <TextView
+        android:id="@+id/tvVlogTime"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:text="14:22:01.120"
+        android:textColor="#6B7280"
+        android:textSize="11sp" />
+
+    <!-- Tag Badge -->
+    <TextView
+        android:id="@+id/tvVlogTag"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:background="#3B82F6"
+        android:fontFamily="monospace"
+        android:paddingHorizontal="4dp"
+        android:paddingVertical="1dp"
+        android:text="DOM"
+        android:textColor="#FFFFFF"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+
+    <!-- Message & Details -->
+    <TextView
+        android:id="@+id/tvVlogMessage"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="6dp"
+        android:layout_weight="1"
+        android:fontFamily="monospace"
+        android:text="Gõ từ khóa vào ô #sb_form_q..."
+        android:textColor="#1F2937"
+        android:textSize="11sp" />
+
+</LinearLayout>

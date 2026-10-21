@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- Base Style Declarations with parent="" to prevent erroneous dot-notation lookup -->
+    <style name="Widget" parent="" />
+    <style name="Widget.RewardsNode" parent="" />
+    <style name="Widget.RewardsNode.Card" parent="" />
+    <style name="TextAppearance" parent="" />
+    <style name="TextAppearance.RewardsNode" parent="@android:style/TextAppearance" />
+
+    <!-- ========================================== -->
+    <!-- Card Bento Styles                          -->
+    <!-- ========================================== -->
+    <style name="Widget.RewardsNode.Card.Bento">
+        <item name="android:background">@drawable/bg_card_fluent</item>
+        <item name="android:elevation">@dimen/card_elevation_fluent</item>
+        <item name="android:padding">@dimen/spacing_16</item>
+        <item name="android:clipToOutline">true</item>
+    </style>
+
+    <style name="Widget.RewardsNode.Card.Bento.Safe">
+        <item name="android:background">@drawable/bg_card_fluent</item>
+        <item name="android:elevation">@dimen/card_elevation_fluent</item>
+        <item name="android:padding">@dimen/margin_safe</item>
+        <item name="android:clipToOutline">true</item>
+    </style>
+
+    <!-- ========================================== -->
+    <!-- Primary Hero Button Styles                 -->
+    <!-- ========================================== -->
+    <style name="Widget.RewardsNode.Button.Hero" parent="@android:style/Widget.Button">
+        <item name="android:background">@drawable/bg_btn_hero</item>
+        <item name="android:minHeight">@dimen/hero_button_height</item>
+        <item name="android:textColor">@color/pure_white</item>
+        <item name="android:textSize">@dimen/text_size_subtitle</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">false</item>
+        <item name="android:stateListAnimator">@null</item>
+        <item name="android:paddingStart">@dimen/spacing_24</item>
+        <item name="android:paddingEnd">@dimen/spacing_24</item>
+        <item name="android:gravity">center</item>
+    </style>
+
+    <!-- ========================================== -->
+    <!-- Pill Filter Styles (6 Vlog Filters)        -->
+    <!-- ========================================== -->
+    <style name="Widget.RewardsNode.PillFilter" parent="">
+        <item name="android:minHeight">@dimen/pill_height</item>
+        <item name="android:paddingStart">@dimen/spacing_16</item>
+        <item name="android:paddingEnd">@dimen/spacing_16</item>
+        <item name="android:gravity">center</item>
+        <item name="android:textSize">@dimen/text_size_badge</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textAllCaps">true</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.All">
+        <item name="android:background">@drawable/bg_pill_all</item>
+        <item name="android:textColor">@color/pill_all</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.Err">
+        <item name="android:background">@drawable/bg_pill_err</item>
+        <item name="android:textColor">@color/pill_err</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.Dom">
+        <item name="android:background">@drawable/bg_pill_dom</item>
+        <item name="android:textColor">@color/pill_dom</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.Srch">
+        <item name="android:background">@drawable/bg_pill_srch</item>
+        <item name="android:textColor">@color/pill_srch</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.Net">
+        <item name="android:background">@drawable/bg_pill_net</item>
+        <item name="android:textColor">@color/pill_net</item>
+    </style>
+
+    <style name="Widget.RewardsNode.PillFilter.Cool">
+        <item name="android:background">@drawable/bg_pill_cool</item>
+        <item name="android:textColor">@color/pill_cool</item>
+    </style>
+
+    <!-- ========================================== -->
+    <!-- Text Appearances                           -->
+    <!-- ========================================== -->
+    <style name="TextAppearance.RewardsNode.Hero">
+        <item name="android:textSize">@dimen/text_size_hero</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/slate_900</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Headline">
+        <item name="android:textSize">@dimen/text_size_headline</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/slate_900</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Title">
+        <item name="android:textSize">@dimen/text_size_title</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/slate_900</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Subtitle">
+        <item name="android:textSize">@dimen/text_size_subtitle</item>
+        <item name="android:textStyle">normal</item>
+        <item name="android:textColor">@color/slate_600</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Body">
+        <item name="android:textSize">@dimen/text_size_body</item>
+        <item name="android:textColor">@color/slate_700</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Caption">
+        <item name="android:textSize">@dimen/text_size_caption</item>
+        <item name="android:textColor">@color/slate_500</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Badge">
+        <item name="android:textSize">@dimen/text_size_badge</item>
+        <item name="android:textStyle">bold</item>
+        <item name="android:textColor">@color/slate_800</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Pill">
+        <item name="android:textSize">@dimen/text_size_badge</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+
+    <style name="TextAppearance.RewardsNode.Code">
+        <item name="android:textSize">@dimen/text_size_caption</item>
+        <item name="android:fontFamily">monospace</item>
+        <item name="android:textColor">@color/slate_800</item>
+    </style>
+
+</resources>

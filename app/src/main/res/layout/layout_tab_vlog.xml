@@ -1,0 +1,303 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/rootTabVlog"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000"
+    android:clickable="true"
+    android:focusable="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <!-- Top Header & Search Area (Compact Slate) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:paddingHorizontal="14dp"
+            android:paddingTop="8dp"
+            android:paddingBottom="6dp">
+
+            <!-- 1-Row Header (36dp): Title, LIVE Badge & 2 Action Buttons -->
+            <RelativeLayout
+                android:layout_width="match_parent"
+                android:layout_height="36dp">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:layout_alignParentStart="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Vlog Console"
+                        android:textColor="#F8FAFC"
+                        android:textSize="17sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:background="#10B981"
+                        android:paddingHorizontal="5dp"
+                        android:paddingVertical="1dp"
+                        android:text="LIVE"
+                        android:textColor="#FFFFFF"
+                        android:textSize="9sp"
+                        android:textStyle="bold" />
+
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="match_parent"
+                    android:layout_alignParentEnd="true"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <!-- Export Vlog Button (36x36dp) -->
+                    <ImageButton
+                        android:id="@+id/btnExportVlog"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Export Vlog"
+                        android:padding="6dp"
+                        android:scaleType="fitCenter"
+                        android:src="@android:drawable/ic_menu_share"
+                        android:tint="#94A3B8" />
+
+                    <!-- Clear Vlog Button (36x36dp) -->
+                    <ImageButton
+                        android:id="@+id/btnClearVlog"
+                        android:layout_width="36dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="2dp"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Clear Vlog"
+                        android:padding="6dp"
+                        android:scaleType="fitCenter"
+                        android:src="@android:drawable/ic_menu_delete"
+                        android:tint="#94A3B8" />
+
+                </LinearLayout>
+
+            </RelativeLayout>
+
+            <!-- Quick Search Log Input (h=34dp) -->
+            <EditText
+                android:id="@+id/etLogSearch"
+                android:layout_width="match_parent"
+                android:layout_height="34dp"
+                android:layout_marginTop="6dp"
+                android:background="@drawable/bg_profile_card_dark"
+                android:gravity="center_vertical"
+                android:hint="Tìm kiếm log realtime..."
+                android:imeOptions="actionSearch"
+                android:inputType="text"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="0dp"
+                android:singleLine="true"
+                android:textColor="#F8FAFC"
+                android:textColorHint="#64748B"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+        <!-- 6 Filter Buttons Bar (HorizontalScrollView, Chip height=26dp) -->
+        <HorizontalScrollView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clipToPadding="false"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:paddingBottom="6dp"
+            android:scrollbars="none">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- 1. All Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterAll"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_all"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="Tất cả"
+                    android:textColor="@color/pill_all"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 2. ERR Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterErr"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_err"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="Lỗi (ERR)"
+                    android:textColor="@color/pill_err"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 3. DOM Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterDom"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_dom"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="DOM"
+                    android:textColor="@color/pill_dom"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 4. SRCH Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterSrch"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_srch"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="SRCH"
+                    android:textColor="@color/pill_srch"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 5. NET Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterNet"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_net"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="Mạng"
+                    android:textColor="@color/pill_net"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 6. COOL Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterCool"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:background="@drawable/bg_pill_cool"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="Cooldown"
+                    android:textColor="@color/pill_cool"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+            </LinearLayout>
+
+        </HorizontalScrollView>
+
+        <!-- Terminal Deck Zone with bg_thumb_deck (Mở rộng tối đa diện tích dọc) -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_thumb_deck"
+            android:orientation="vertical">
+
+            <!-- Fullscreen Terminal ListView Native (Tối đa hóa diện tích) -->
+            <ListView
+                android:id="@+id/lvVlogTerminal"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clipToPadding="false"
+                android:divider="@null"
+                android:dividerHeight="0dp"
+                android:paddingHorizontal="10dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="12dp"
+                android:scrollbars="none"
+                android:stackFromBottom="true"
+                android:transcriptMode="normal" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+    <!-- Scroll to Bottom FAB Container with New Logs Badge -->
+    <FrameLayout
+        android:id="@+id/fabScrollBottom"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="16dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <!-- Inner Circular FAB (44x44dp compact) -->
+        <ImageButton
+            android:id="@+id/btnScrollBottomInner"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_fab_circle"
+            android:contentDescription="Cuộn xuống dưới cùng"
+            android:elevation="6dp"
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_arrow_down" />
+
+        <!-- New Logs Notification Badge -->
+        <TextView
+            android:id="@+id/tvNewLogsBadge"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|end"
+            android:background="@drawable/bg_badge"
+            android:elevation="8dp"
+            android:paddingHorizontal="5dp"
+            android:paddingVertical="1dp"
+            android:text="NEW"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+
+    </FrameLayout>
+
+</FrameLayout>

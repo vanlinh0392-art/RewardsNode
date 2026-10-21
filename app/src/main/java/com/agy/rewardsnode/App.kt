@@ -4,16 +4,12 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
-import androidx.work.*
-import com.agy.rewardsnode.service.WatchdogWorker
-import java.util.concurrent.TimeUnit
 
 class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
-        setupWatchdog()
     }
 
     private fun createNotificationChannel() {
@@ -28,24 +24,8 @@ class App : Application() {
             }
 
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager?.createNotificationChannel(channel)
         }
-    }
-
-    private fun setupWatchdog() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val watchdogRequest = PeriodicWorkRequestBuilder<WatchdogWorker>(30, TimeUnit.MINUTES)
-            .setConstraints(constraints)
-            .build()
-
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "RewardsNodeWatchdog",
-            ExistingPeriodicWorkPolicy.KEEP,
-            watchdogRequest
-        )
     }
 
     companion object {

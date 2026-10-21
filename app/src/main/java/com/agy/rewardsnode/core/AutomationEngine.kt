@@ -60,37 +60,30 @@ object AutomationEngine {
     fun createSmoothScrollScript(): String {
         return """
             (function() {
-                var totalScrolls = Math.floor(Math.random() * 3) + 2;
-                var count = 0;
-                function doScroll() {
-                    if (count < totalScrolls) {
-                        var distance = Math.floor(Math.random() * 300) + 200;
-                        window.scrollBy({ top: distance, behavior: 'smooth' });
-                        count++;
-                        setTimeout(doScroll, Math.floor(Math.random() * 1500) + 1000);
+                try {
+                    var totalScrolls = Math.floor(Math.random() * 3) + 3; // 3 đến 5 lượt cuộn
+                    var count = 0;
+                    function doScroll() {
+                        if (count < totalScrolls) {
+                            var distance = (count === 2 && Math.random() < 0.25)
+                                ? -Math.floor(Math.random() * 150 + 50)
+                                : Math.floor(Math.random() * 300) + 200;
+                            window.scrollBy({ top: distance, behavior: 'smooth' });
+                            count++;
+                            var nextDelay = Math.floor(Math.random() * 1000) + 1400; // 1.4s - 2.4s
+                            setTimeout(doScroll, nextDelay);
+                        }
                     }
-                }
-                doScroll();
+                    setTimeout(doScroll, 600);
+                } catch(e) {}
             })();
         """.trimIndent()
     }
 
     /**
-     * Kịch bản đọc số điểm hiện tại từ header của Bing Rewards.
+     * Kịch bản đọc số điểm hiện tại từ header của Bing Rewards hoặc Flyout API.
      */
     fun createPointsExtractorScript(): String {
-        return """
-            (function() {
-                try {
-                    var el = document.getElementById('id_rc') || document.getElementById('id_rh') || document.querySelector('.rh_meter');
-                    if (el) {
-                        var text = el.innerText || el.textContent;
-                        var cleaned = text.replace(/[^0-9]/g, '');
-                        if (cleaned) return parseInt(cleaned, 10);
-                    }
-                } catch(e) {}
-                return -1;
-            })();
-        """.trimIndent()
+        return RewardsBalanceExtractor.createExtractionScript()
     }
 }
