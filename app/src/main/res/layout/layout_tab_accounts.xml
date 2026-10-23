@@ -23,13 +23,19 @@
             android:paddingBottom="12dp">
 
             <TextView
-                android:layout_width="0dp"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
                 android:text="Tài Khoản"
+                android:maxLines="1"
+                android:singleLine="true"
                 android:textColor="#F8FAFC"
-                android:textSize="20sp"
+                android:textSize="18sp"
                 android:textStyle="bold" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
 
             <TextView
                 android:id="@+id/tvAccountsBadge"

@@ -32,3 +32,13 @@ gen/
 *.png
 *.jpg
 scratch/
+
+!app/src/main/res/**/*.png
+!app/src/main/res/**/*.jpg
+
+*.rbkp
+.codegraph/
+sources.txt
+d8_sources.txt
+__pycache__/
+*.pyc

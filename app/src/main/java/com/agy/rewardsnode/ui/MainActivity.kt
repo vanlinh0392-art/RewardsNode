@@ -19,10 +19,15 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.Gravity
+import android.text.TextUtils
 import android.view.WindowInsets
 import android.widget.*
 import com.agy.rewardsnode.R
+import com.agy.rewardsnode.core.ForensicShredder
+import com.agy.rewardsnode.core.ProfileManager
 import com.agy.rewardsnode.core.RewardsBalanceExtractor
+import com.agy.rewardsnode.core.VaultBackupManager
 import com.agy.rewardsnode.core.VlogManager
 import com.agy.rewardsnode.data.EncryptedPreferences
 import com.agy.rewardsnode.data.db.AppDatabase
@@ -34,6 +39,9 @@ import com.agy.rewardsnode.utils.TelegramNotifier
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -85,16 +93,23 @@ class MainActivity : Activity() {
     private var tvPcBasket: TextView? = null
     private var tvEdgeBasket: TextView? = null
     private var tvMobileBasket: TextView? = null
+    private var tvBasketNews: TextView? = null
+    private var tvBasketDailyPromo: TextView? = null
     private var tvProfileEmail: TextView? = null
     private var tvProfileName: TextView? = null
     private var tvProfileBadge: TextView? = null
     private var tvAvatarInitials: TextView? = null
     private var tvStreakBadge: TextView? = null
     private var tvLevelBadge: TextView? = null
-    private var btnQuickCooldown: Button? = null
-    private var btnQuickProxy: Button? = null
     private var tvTelemetryDailySet: TextView? = null
     private var tvTelemetryClaim: TextView? = null
+    private var tvTelemetryRouting: TextView? = null
+    private var tvTelemetrySafety: TextView? = null
+    private var tvTelemetryBingSso: TextView? = null
+    private var tvTimerReset: TextView? = null
+    private var countdownTickerJob: Job? = null
+    private var latestDashboardAccounts: List<AccountProfile> = emptyList()
+    private var activeDashboardProfile: AccountProfile? = null
 
     private lateinit var tvNodeStatus: TextView
     private lateinit var tvNodeDetails: TextView
@@ -117,11 +132,14 @@ class MainActivity : Activity() {
     private lateinit var lvVlogTerminal: ListView
     private lateinit var vlogAdapter: VlogTerminalAdapter
     private lateinit var etLogSearch: EditText
+    private lateinit var btnVlogPointHistory: Button
     private lateinit var btnExportVlog: ImageButton
     private lateinit var btnClearVlog: ImageButton
+    private lateinit var fabScrollTop: FrameLayout
     private lateinit var fabScrollBottom: FrameLayout
     private lateinit var tvNewLogsBadge: TextView
     private lateinit var btnFilterAll: Button
+    private lateinit var btnFilterPoint: Button
     private lateinit var btnFilterErr: Button
     private lateinit var btnFilterDom: Button
     private lateinit var btnFilterSrch: Button
@@ -140,16 +158,46 @@ class MainActivity : Activity() {
     private lateinit var etCooldownMax: EditText
     private lateinit var etDefaultTargetSearches: EditText
     private lateinit var swApplyTargetToAll: Switch
+    private lateinit var etBatchSize: EditText
+    private lateinit var etSearchDelayMin: EditText
+    private lateinit var etSearchDelayMax: EditText
+    private lateinit var etMaxClaimRetries: EditText
+    private lateinit var etDapiMaxRetries: EditText
+    private lateinit var etMaxReconciliationPasses: EditText
+    private lateinit var etCooldownTriggerBatches: EditText
+    private lateinit var etFrozenStopBatches: EditText
+    private lateinit var etProxyCircuitThreshold: EditText
     private lateinit var etGlobalProxy: EditText
     private lateinit var etUserAgent: EditText
     private lateinit var etTelegramBotToken: EditText
     private lateinit var etTelegramChatId: EditText
     private lateinit var btnTestTelegram: Button
+    private lateinit var btnResetTelegramDefault: Button
     private lateinit var swDarkMode: Switch
     private lateinit var swWifiOnly: Switch
     private lateinit var swBatteryGuard: Switch
     private lateinit var btnBatteryOptimization: Button
+    private lateinit var swAutoDailySchedule: Switch
+    private lateinit var etScheduleSlot1: EditText
+    private lateinit var etScheduleSlot2: EditText
+    private lateinit var etScheduleSlot3: EditText
+    private lateinit var swScheduleSlot1: Switch
+    private lateinit var swScheduleSlot2: Switch
+    private lateinit var swScheduleSlot3: Switch
+    private lateinit var swAutoStopCompleted: Switch
+    private lateinit var btnEmergencyReset: Button
+    private lateinit var btnHealthCheck: Button
+    private lateinit var btnVaultBackup: Button
+    private lateinit var btnVaultRestore: Button
+    private lateinit var btnForensicShred: Button
     private lateinit var btnSaveSettings: Button
+
+    private var pendingBackupFile: File? = null
+
+    companion object {
+        private const val REQ_CREATE_BACKUP_DOC = 2001
+        private const val REQ_OPEN_BACKUP_DOC = 2002
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -172,10 +220,46 @@ class MainActivity : Activity() {
         updateServiceUIState()
     }
 
+    override fun onStart() {
+        super.onStart()
+        startDualCountdownTicker()
+        updateServiceUIState()
+    }
+
     override fun onResume() {
         super.onResume()
         updateServiceUIState()
         syncActiveProfilesBalance()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        countdownTickerJob?.cancel()
+        if (::chronometerUptime.isInitialized) chronometerUptime.stop()
+        isUptimeRunning = false
+    }
+
+    private fun startDualCountdownTicker() {
+        countdownTickerJob?.cancel()
+        countdownTickerJob = scope.launch {
+            while (isActive) {
+                val now = System.currentTimeMillis()
+                val cal = java.util.Calendar.getInstance().apply {
+                    timeInMillis = now
+                    add(java.util.Calendar.DAY_OF_YEAR, 1)
+                    set(java.util.Calendar.HOUR_OF_DAY, 0)
+                    set(java.util.Calendar.MINUTE, 0)
+                    set(java.util.Calendar.SECOND, 0)
+                    set(java.util.Calendar.MILLISECOND, 0)
+                }
+                val diffResetSec = ((cal.timeInMillis - now) / 1000L).coerceAtLeast(0L)
+                val rH = diffResetSec / 3600L
+                val rM = (diffResetSec % 3600L) / 60L
+                val rS = diffResetSec % 60L
+                tvTimerReset?.text = String.format(Locale.US, "%02d:%02d:%02d", rH, rM, rS)
+                delay(1000L)
+            }
+        }
     }
 
     private fun syncActiveProfilesBalance(isUserTriggered: Boolean = false) {
@@ -188,12 +272,29 @@ class MainActivity : Activity() {
                         }
                     }
                 }
+                val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
                 val profiles = database.rewardsDao().getAllActiveProfiles()
                 var updatedCount = 0
                 for (profile in profiles) {
-                    val cookies = profile.cookiesSnapshot
-                    if (!cookies.isNullOrBlank()) {
-                        val result = RewardsBalanceExtractor.extractPointsViaHttp(cookies, profile.customUserAgent ?: prefs.userAgent, profile.proxyUrl)
+                    val preserveDailyDoneToday = (profile.lastActiveDate == todayStr && profile.dailySetDone)
+                    var activeCookies = profile.cookiesSnapshot
+                    if (!activeCookies.isNullOrBlank()) {
+                        val effectiveUa = profile.customUserAgent ?: prefs.userAgent
+                        var result = RewardsBalanceExtractor.extractPointsViaHttp(activeCookies, effectiveUa, profile.proxyUrl)
+                        if (!result.isSuccess || result.availablePoints <= 0 || profile.cookieExpired) {
+                            val renewedCookies = ProfileManager.renewCookiesViaPureHttp(
+                                activeCookies,
+                                effectiveUa,
+                                profile.proxyUrl
+                            )
+                            if (!renewedCookies.isNullOrBlank()) {
+                                activeCookies = renewedCookies
+                                database.rewardsDao().updateProfile(
+                                    profile.copy(cookiesSnapshot = renewedCookies, cookieExpired = false)
+                                )
+                                result = RewardsBalanceExtractor.extractPointsViaHttp(activeCookies, effectiveUa, profile.proxyUrl)
+                            }
+                        }
                         if (result.isSuccess) {
                             RewardsBalanceExtractor.latestTelemetryMap[profile.id] = result
                             if (profile.email.isNotBlank()) {
@@ -201,28 +302,31 @@ class MainActivity : Activity() {
                             }
                             val avail = if (result.availablePoints > 0) result.availablePoints else profile.availablePoints
                             val emailToSet = if (!result.email.isNullOrBlank() && (profile.email.startsWith("account_") || !profile.email.contains("@"))) {
-                                result.email
+                                result.email ?: profile.email
                             } else {
                                 profile.email
                             }
                             val nameToSet = if (!result.profileName.isNullOrBlank() && (profile.profileName.startsWith("Profile ") || profile.profileName.isBlank())) {
-                                result.profileName
+                                result.profileName ?: profile.profileName
                             } else {
                                 profile.profileName
                             }
                             val levelToSet = if (result.level in 1..2) result.level else profile.level
 
-                            val pcProg = if (result.pcMax > 0 || result.pcProgress > 0) result.pcProgress else profile.pcProgress
                             val pcM = if (result.pcMax > 0) result.pcMax else (if (levelToSet == 1) 30 else 90)
-                            val mobProg = if (result.mobileMax > 0 || result.mobileProgress > 0) result.mobileProgress else profile.mobileProgress
+                            val pcProg = minOf(result.pcProgress, pcM)
                             val mobM = if (result.mobileMax > 0) result.mobileMax else (if (levelToSet == 1) 0 else 60)
-                            val edgeProg = if (result.edgeMax > 0 || result.edgeProgress > 0) result.edgeProgress else profile.edgeProgress
-                            val edgeM = if (result.edgeMax > 0) result.edgeMax else 12
+                            val mobProg = if (mobM > 0) minOf(result.mobileProgress, mobM) else 0
+                            val edgeM = if (result.edgeMax > 0) result.edgeMax else 0
+                            val edgeProg = if (edgeM > 0) minOf(result.edgeProgress, edgeM) else 0
+                            val readM = if (result.readNewsMax > 0) result.readNewsMax else profile.readMax
+                            val readProg = maxOf(profile.readProgress, result.readNewsProgress)
+                            val estSearches = maxOf(profile.completedSearchesToday, (pcProg + mobProg) / 3)
 
                             val pointsEarned = when {
                                 result.pointsEarnedToday > 0 -> result.pointsEarnedToday
                                 (pcProg + mobProg + edgeProg) > 0 -> pcProg + mobProg + edgeProg
-                                profile.pointsEarnedToday > 0 -> profile.pointsEarnedToday
+                                profile.pointsEarnedToday in 1..200 -> profile.pointsEarnedToday
                                 profile.baselinePointsToday > 0 && avail > profile.baselinePointsToday -> avail - profile.baselinePointsToday
                                 else -> 0
                             }
@@ -230,8 +334,15 @@ class MainActivity : Activity() {
                             val updated = profile.copy(
                                 email = emailToSet,
                                 profileName = nameToSet,
+                                cookiesSnapshot = activeCookies,
+                                cookieExpired = false,
                                 level = levelToSet,
-                                targetSearches = if (profile.targetSearches == 55 && levelToSet == 1) 15 else profile.targetSearches,
+                                targetSearches = if (levelToSet == 1) {
+                                    if (profile.targetSearches in 10..45) profile.targetSearches else 35
+                                } else {
+                                    if (profile.targetSearches in 40..65) profile.targetSearches else 55
+                                },
+                                completedSearchesToday = estSearches,
                                 availablePoints = avail,
                                 totalPoints = avail,
                                 lifetimePoints = if (result.lifetimePoints > 0) result.lifetimePoints else profile.lifetimePoints,
@@ -243,7 +354,17 @@ class MainActivity : Activity() {
                                 mobileProgress = mobProg,
                                 mobileMax = mobM,
                                 edgeProgress = edgeProg,
-                                edgeMax = edgeM
+                                edgeMax = edgeM,
+                                readProgress = readProg,
+                                readMax = readM,
+                                dailySetDone = preserveDailyDoneToday || (if (result.dailySetTotal > 0) result.dailySetDone else profile.dailySetDone),
+                                dailySetProgress = if (result.dailySetTotal > 0) {
+                                    if (result.dailySetDone || preserveDailyDoneToday) maxOf(result.dailySetProgress, result.dailySetTotal) else result.dailySetProgress
+                                } else {
+                                    profile.dailySetProgress
+                                },
+                                dailySetTotal = if (result.dailySetTotal > 0) result.dailySetTotal else profile.dailySetTotal,
+                                claimablePoints = result.claimablePoints
                             )
                             database.rewardsDao().updateProfile(updated)
                             updatedCount++
@@ -339,8 +460,12 @@ class MainActivity : Activity() {
 
         // Nếu rời khỏi Tab Vlog (index != 2) thì ẩn ngay lập tức FAB và Badge
         if (index != 2) {
-            fabScrollBottom.visibility = View.GONE
-            tvNewLogsBadge.visibility = View.GONE
+            if (::fabScrollTop.isInitialized) fabScrollTop.visibility = View.GONE
+            if (::fabScrollBottom.isInitialized) fabScrollBottom.visibility = View.GONE
+            if (::tvNewLogsBadge.isInitialized) tvNewLogsBadge.visibility = View.GONE
+        } else {
+            if (::fabScrollTop.isInitialized) fabScrollTop.visibility = View.VISIBLE
+            if (::fabScrollBottom.isInitialized) fabScrollBottom.visibility = View.VISIBLE
         }
 
         // Tự động sync số dư khi vào Tab 1 (Tài khoản)
@@ -398,24 +523,25 @@ class MainActivity : Activity() {
         tvPcBasket = viewDashboard.findViewById(R.id.tvLegendPc) ?: viewDashboard.findViewById(R.id.tvPcBasket)
         tvEdgeBasket = viewDashboard.findViewById(R.id.tvLegendEdge) ?: viewDashboard.findViewById(R.id.tvEdgeBasket)
         tvMobileBasket = viewDashboard.findViewById(R.id.tvLegendMob) ?: viewDashboard.findViewById(R.id.tvMobileBasket)
+        tvBasketNews = viewDashboard.findViewById(R.id.tvBasketNews)
+        tvBasketDailyPromo = viewDashboard.findViewById(R.id.tvBasketDailyPromo)
 
-        // Header Profile & Quick Action Buttons
+        // Đồng hồ đếm ngược Reset 00:00
+        tvTimerReset = viewDashboard.findViewById(R.id.tvTimerReset)
+
+        // Header Profile
         tvProfileEmail = viewDashboard.findViewById(R.id.tvProfileEmail)
         tvProfileName = viewDashboard.findViewById(R.id.tvProfileName)
         tvProfileBadge = viewDashboard.findViewById(R.id.tvProfileBadge)
         tvAvatarInitials = viewDashboard.findViewById(R.id.tvAvatarInitials)
         tvStreakBadge = viewDashboard.findViewById(R.id.tvStreakBadge)
         tvLevelBadge = viewDashboard.findViewById(R.id.tvLevelBadge)
-        btnQuickCooldown = viewDashboard.findViewById(R.id.btnQuickCooldown)
-        btnQuickProxy = viewDashboard.findViewById(R.id.btnQuickProxy)
 
-        btnQuickCooldown?.setOnClickListener {
-            selectTab(3) // Chuyển sang Tab Cài đặt để điều chỉnh Cooldown
-        }
-
-        btnQuickProxy?.setOnClickListener {
-            selectTab(1) // Chuyển sang Tab Tài khoản để cấu hình Proxy
-        }
+        // Ánh xạ các nhãn động trong thẻ Thông Số Vận Hành 24/7
+        tvTelemetryRouting = findTextViewWithText(viewDashboard, "PC 90đ • Mob 60đ")
+        tvTelemetrySafety = findTextViewWithText(viewDashboard, "Sàn Toán 920s")
+        tvTelemetryBingSso = findTextViewWithText(viewDashboard, "Token Đã Khớp")
+        tvTelemetrySafety?.text = "Cooldown ${prefs.cooldownMin}-${prefs.cooldownMax}p"
 
         // Ánh xạ & khởi tạo hàng Daily Set & Claim trong thẻ Thông Số Vận Hành 24/7
         val tvTelemetryTitle = findTextViewWithText(viewDashboard, "THÔNG SỐ VẬN HÀNH 24/7")
@@ -531,8 +657,7 @@ class MainActivity : Activity() {
                 tvStatProxies.text = proxyCount.toString()
                 tvStatProfiles.text = if (accounts.any { !it.isEnabled }) "${activeAccounts.size}/${accounts.size}" else accounts.size.toString()
 
-                // Cập nhật tvRingTotalPoints = tổng điểm tích lũy của tất cả accounts
-                tvRingTotalPoints?.text = String.format("%,d", totalAvailablePoints)
+                latestDashboardAccounts = accounts
 
                 // Ưu tiên chọn profile hiển thị
                 val profile = if (!runningId.isNullOrBlank()) {
@@ -542,11 +667,13 @@ class MainActivity : Activity() {
                         ?: activeAccounts.firstOrNull()
                         ?: accounts.firstOrNull()
                 }
+                activeDashboardProfile = profile
 
                 if (profile != null) {
                     val pcMax = if (profile.pcMax > 0) profile.pcMax else (if (profile.level == 1) 30 else 90)
-                    val edgeMax = if (profile.edgeMax > 0) profile.edgeMax else 12
+                    val edgeMax = if (profile.edgeMax > 0) profile.edgeMax else 0
                     val mobMax = if (profile.mobileMax > 0) profile.mobileMax else (if (profile.level == 1) 0 else 60)
+                    val readMax = if (profile.readMax > 0) profile.readMax else 30
 
                     val pcRatio = if (pcMax > 0) (profile.pcProgress.toFloat() / pcMax).coerceIn(0f, 1f) else 0f
                     val edgeRatio = if (edgeMax > 0) (profile.edgeProgress.toFloat() / edgeMax).coerceIn(0f, 1f) else 0f
@@ -555,10 +682,32 @@ class MainActivity : Activity() {
                     // Cập nhật ActivityRingView với animation mượt mà
                     activityRingView?.setProgress(pcRatio, edgeRatio, mobileRatio, animate = true)
 
-                    // Cập nhật các nhãn rổ điểm (PC, Edge, Mobile)
+                    // Cập nhật các nhãn rổ điểm (PC, Edge, Mobile, News)
                     tvPcBasket?.text = "PC ${profile.pcProgress}/$pcMax"
                     tvEdgeBasket?.text = "Edge ${profile.edgeProgress}/$edgeMax"
                     tvMobileBasket?.text = "Mob ${profile.mobileProgress}/$mobMax"
+                    tvBasketNews?.text = "News ${profile.readProgress}/$readMax"
+
+                    val profileEarnedToday = when {
+                        profile.pointsEarnedToday > 0 -> profile.pointsEarnedToday
+                        (profile.pcProgress + profile.mobileProgress + profile.edgeProgress + profile.readProgress) > 0 -> {
+                            profile.pcProgress + profile.mobileProgress + profile.edgeProgress + profile.readProgress
+                        }
+                        else -> 0
+                    }
+                    tvRingTotalPoints?.text = String.format("%,d", profile.availablePoints)
+                    tvRingPointsLabel?.text = "+${profileEarnedToday}Đ HÔM NAY"
+
+                    // Cập nhật các nhãn động trong cardActiveNodeTelemetry
+                    tvTelemetryRouting?.text = if (mobMax > 0) "PC ${pcMax}đ • Mob ${mobMax}đ" else "PC ${pcMax}đ • Read ${readMax}đ"
+                    tvTelemetrySafety?.text = "Cooldown ${prefs.cooldownMin}-${prefs.cooldownMax}p"
+                    if (profile.cookieExpired) {
+                        tvTelemetryBingSso?.text = "Cần Đăng Nhập Lại"
+                        tvTelemetryBingSso?.setTextColor(Color.parseColor("#EF4444"))
+                    } else {
+                        tvTelemetryBingSso?.text = "Token Đã Khớp"
+                        tvTelemetryBingSso?.setTextColor(Color.parseColor("#E2E8F0"))
+                    }
 
                     // Cập nhật Profile Info & Badges
                     val displayName = if (profile.profileName.isNotBlank() && !profile.profileName.startsWith("Profile ")) {
@@ -591,8 +740,16 @@ class MainActivity : Activity() {
                 } else {
                     activityRingView?.setProgress(0f, 0f, 0f, animate = false)
                     tvPcBasket?.text = "PC 0/30"
-                    tvEdgeBasket?.text = "Edge 0/12"
+                    tvEdgeBasket?.text = "Edge 0/0"
                     tvMobileBasket?.text = "Mob 0/0"
+                    tvBasketNews?.text = "News 0/30"
+                    tvBasketDailyPromo?.text = "Daily 0/3"
+                    tvRingTotalPoints?.text = "0"
+                    tvRingPointsLabel?.text = "ĐIỂM HIỆN TẠI"
+                    tvTelemetryRouting?.text = "PC 90đ • Mob 60đ"
+                    tvTelemetrySafety?.text = "Cooldown ${prefs.cooldownMin}-${prefs.cooldownMax}p"
+                    tvTelemetryBingSso?.text = "Token Đã Khớp"
+                    tvTelemetryBingSso?.setTextColor(Color.parseColor("#E2E8F0"))
                     tvProfileName?.text = "Chưa có tài khoản"
                     tvProfileBadge?.visibility = View.GONE
                     tvAvatarInitials?.text = "RN"
@@ -607,30 +764,123 @@ class MainActivity : Activity() {
                         ?: RewardsBalanceExtractor.latestTelemetryMap[profile.email]
                 } else null
 
-                if (telemetry != null) {
-                    if (telemetry.dailySetDone) {
-                        tvTelemetryDailySet?.text = if (telemetry.streakProtectionOn) "Đã xong 3/3 • Bảo vệ" else "Hoàn tất (3/3)"
-                        tvTelemetryDailySet?.setTextColor(Color.parseColor("#10B981"))
-                    } else if (telemetry.dailySetProgress > 0) {
-                        tvTelemetryDailySet?.text = "${telemetry.dailySetProgress}/3 hoạt động"
-                        tvTelemetryDailySet?.setTextColor(Color.parseColor("#F59E0B"))
-                    } else {
-                        tvTelemetryDailySet?.text = if (telemetry.streakProtectionOn) "Chưa làm • Bảo vệ Bật" else "Chưa làm (0/3)"
-                        tvTelemetryDailySet?.setTextColor(Color.parseColor("#94A3B8"))
-                    }
+                val totalDaily = telemetry?.dailySetTotal ?: (if ((profile?.dailySetTotal ?: 0) > 0) profile!!.dailySetTotal else 3)
+                val isDailySetFinished = (profile?.dailySetDone == true) || (telemetry?.dailySetDone == true)
+                val dailySetCompletedCount = if (isDailySetFinished) totalDaily else maxOf(profile?.dailySetProgress ?: 0, telemetry?.dailySetProgress ?: 0)
+                if (profile != null) {
+                    tvBasketDailyPromo?.text = "Daily $dailySetCompletedCount/$totalDaily"
+                } else {
+                    tvBasketDailyPromo?.text = "Daily 0/3"
+                }
 
-                    if (telemetry.claimablePoints > 0) {
-                        tvTelemetryClaim?.text = "+${telemetry.claimablePoints}đ Sẵn sàng"
-                        tvTelemetryClaim?.setTextColor(Color.parseColor("#F59E0B"))
-                    } else {
-                        tvTelemetryClaim?.text = "Đã nhận hết"
-                        tvTelemetryClaim?.setTextColor(Color.parseColor("#10B981"))
-                    }
+                if (isDailySetFinished) {
+                    tvTelemetryDailySet?.text = if (telemetry?.streakProtectionOn == true) "Hoàn tất ($dailySetCompletedCount/$totalDaily) • Bảo vệ" else "Hoàn tất ($dailySetCompletedCount/$totalDaily)"
+                    tvTelemetryDailySet?.setTextColor(Color.parseColor("#10B981"))
+                } else if (dailySetCompletedCount > 0) {
+                    tvTelemetryDailySet?.text = "$dailySetCompletedCount/$totalDaily hoạt động"
+                    tvTelemetryDailySet?.setTextColor(Color.parseColor("#F59E0B"))
+                } else if (profile != null) {
+                    tvTelemetryDailySet?.text = if (telemetry?.streakProtectionOn == true) "Chưa làm • Bảo vệ Bật" else "Chưa làm (0/$totalDaily)"
+                    tvTelemetryDailySet?.setTextColor(Color.parseColor("#94A3B8"))
                 } else {
                     tvTelemetryDailySet?.text = "Sẵn sàng"
                     tvTelemetryDailySet?.setTextColor(Color.parseColor("#38BDF8"))
+                }
+
+                val dashClaimable = telemetry?.claimablePoints ?: (profile?.claimablePoints ?: 0)
+                if (dashClaimable > 0) {
+                    tvTelemetryClaim?.text = "+${dashClaimable}đ Sẵn sàng"
+                    tvTelemetryClaim?.setTextColor(Color.parseColor("#F59E0B"))
+                } else {
                     tvTelemetryClaim?.text = "Đã nhận hết"
                     tvTelemetryClaim?.setTextColor(Color.parseColor("#10B981"))
+                }
+
+                // Cập nhật Danh Sách Nhiệm Vụ Động (Daily Set Tasks)
+                val llTasksContainer = viewDashboard.findViewById<LinearLayout>(R.id.llDynamicTasksContainer)
+                val tvEmptyTasks = viewDashboard.findViewById<TextView>(R.id.tvEmptyDynamicTasks)
+                val tvTasksBadge = viewDashboard.findViewById<TextView>(R.id.tvTasksBadge)
+
+                val dailyTasksList = telemetry?.dailyTasks ?: emptyList()
+                if (llTasksContainer != null) {
+                    if (dailyTasksList.isNotEmpty()) {
+                        tvEmptyTasks?.visibility = View.GONE
+                        while (llTasksContainer.childCount > 1) {
+                            llTasksContainer.removeViewAt(1)
+                        }
+                        val doneCount = dailyTasksList.count { it.isCompleted }
+                        tvTasksBadge?.text = "$doneCount/${dailyTasksList.size} DAILY SET"
+                        for (task in dailyTasksList) {
+                            val taskRow = LinearLayout(this@MainActivity).apply {
+                                layoutParams = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                ).apply {
+                                    setMargins(0, (4 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
+                                }
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                setPadding(
+                                    (10 * resources.displayMetrics.density).toInt(),
+                                    (8 * resources.displayMetrics.density).toInt(),
+                                    (10 * resources.displayMetrics.density).toInt(),
+                                    (8 * resources.displayMetrics.density).toInt()
+                                )
+                                setBackgroundResource(R.drawable.bg_pill_dark)
+
+                                val icon = when (task.taskType.lowercase(Locale.ROOT)) {
+                                    "poll" -> "📊 "
+                                    "quiz" -> "❓ "
+                                    "news" -> "📰 "
+                                    else -> "🔗 "
+                                }
+
+                                val tvTitle = TextView(this@MainActivity).apply {
+                                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                                    text = "$icon${task.title}"
+                                    setTextColor(if (task.isCompleted) Color.parseColor("#94A3B8") else Color.parseColor("#F8FAFC"))
+                                    textSize = 11f
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    maxLines = 1
+                                    ellipsize = TextUtils.TruncateAt.END
+                                }
+
+                                val tvPoints = TextView(this@MainActivity).apply {
+                                    text = "+${task.pointValue}đ"
+                                    setTextColor(Color.parseColor("#F59E0B"))
+                                    textSize = 10f
+                                    typeface = Typeface.DEFAULT_BOLD
+                                    setPadding(0, 0, (8 * resources.displayMetrics.density).toInt(), 0)
+                                }
+
+                                val tvStatus = TextView(this@MainActivity).apply {
+                                    text = if (task.isCompleted) "✓ Xong" else "Chờ làm"
+                                    setTextColor(if (task.isCompleted) Color.parseColor("#10B981") else Color.parseColor("#38BDF8"))
+                                    textSize = 10f
+                                    typeface = Typeface.DEFAULT_BOLD
+                                }
+
+                                addView(tvTitle)
+                                addView(tvPoints)
+                                addView(tvStatus)
+                            }
+                            llTasksContainer.addView(taskRow)
+                        }
+                    } else {
+                        tvEmptyTasks?.visibility = View.VISIBLE
+                        while (llTasksContainer.childCount > 1) {
+                            llTasksContainer.removeViewAt(1)
+                        }
+                        if (isDailySetFinished) {
+                            tvEmptyTasks?.text = "Tất cả nhiệm vụ Daily Set đã hoàn tất ✓"
+                            tvEmptyTasks?.setTextColor(Color.parseColor("#10B981"))
+                            tvTasksBadge?.text = "HOÀN TẤT"
+                        } else {
+                            tvEmptyTasks?.text = "Đang đồng bộ nhiệm vụ từ Bing Rewards..."
+                            tvEmptyTasks?.setTextColor(Color.parseColor("#94A3B8"))
+                            tvTasksBadge?.text = "DAILY SET"
+                        }
+                    }
                 }
 
                 if (accounts.isEmpty()) {
@@ -691,7 +941,12 @@ class MainActivity : Activity() {
             btnToggleNode.text = getString(R.string.btn_stop_node)
             btnToggleNode.setBackgroundResource(R.drawable.bg_btn_primary)
             if (!isUptimeRunning) {
-                chronometerUptime.base = SystemClock.elapsedRealtime()
+                val baseTime = if (RewardsForegroundService.serviceStartElapsedRealtime > 0L) {
+                    RewardsForegroundService.serviceStartElapsedRealtime
+                } else {
+                    SystemClock.elapsedRealtime()
+                }
+                chronometerUptime.base = baseTime
                 chronometerUptime.start()
                 isUptimeRunning = true
             }
@@ -864,12 +1119,15 @@ class MainActivity : Activity() {
     private fun setupVlogTab() {
         lvVlogTerminal = viewVlog.findViewById(R.id.lvVlogTerminal)
         etLogSearch = viewVlog.findViewById(R.id.etLogSearch)
+        btnVlogPointHistory = viewVlog.findViewById(R.id.btnVlogPointHistory)
         btnExportVlog = viewVlog.findViewById(R.id.btnExportVlog)
         btnClearVlog = viewVlog.findViewById(R.id.btnClearVlog)
+        fabScrollTop = viewVlog.findViewById(R.id.fabScrollTop)
         fabScrollBottom = viewVlog.findViewById(R.id.fabScrollBottom)
         tvNewLogsBadge = viewVlog.findViewById(R.id.tvNewLogsBadge)
 
         btnFilterAll = viewVlog.findViewById(R.id.btnFilterAll)
+        btnFilterPoint = viewVlog.findViewById(R.id.btnFilterPoint)
         btnFilterErr = viewVlog.findViewById(R.id.btnFilterErr)
         btnFilterDom = viewVlog.findViewById(R.id.btnFilterDom)
         btnFilterSrch = viewVlog.findViewById(R.id.btnFilterSrch)
@@ -888,32 +1146,41 @@ class MainActivity : Activity() {
 
             override fun onScroll(view: AbsListView?, firstVisibleItem: Int, visibleItemCount: Int, totalItemCount: Int) {
                 if (totalItemCount == 0) return
-                val lastVisible = firstVisibleItem + visibleItemCount
-                val atBottom = (lastVisible >= totalItemCount - 1)
-
-                if (atBottom) {
+                val atTop = (firstVisibleItem == 0)
+                if (atTop) {
                     isAutoScrollLocked = false
                     unreadCountSinceScroll = 0
-                    fabScrollBottom.visibility = View.GONE
                     tvNewLogsBadge.visibility = View.GONE
                 } else {
                     isAutoScrollLocked = true
-                    if (currentTab == 2) {
-                        fabScrollBottom.visibility = View.VISIBLE
-                    }
                 }
             }
         })
 
-        fabScrollBottom.setOnClickListener {
-            val total = vlogAdapter.count
-            if (total > 0) {
-                lvVlogTerminal.smoothScrollToPosition(total - 1)
+        val scrollTopAction = View.OnClickListener {
+            if (vlogAdapter.count > 0) {
+                lvVlogTerminal.setSelection(0)
             }
             isAutoScrollLocked = false
             unreadCountSinceScroll = 0
-            fabScrollBottom.visibility = View.GONE
             tvNewLogsBadge.visibility = View.GONE
+        }
+        fabScrollTop.setOnClickListener(scrollTopAction)
+        viewVlog.findViewById<View>(R.id.btnScrollTopInner)?.setOnClickListener(scrollTopAction)
+
+        val scrollBottomAction = View.OnClickListener {
+            val total = vlogAdapter.count
+            if (total > 0) {
+                lvVlogTerminal.setSelection(total - 1)
+            }
+            unreadCountSinceScroll = 0
+            tvNewLogsBadge.visibility = View.GONE
+        }
+        fabScrollBottom.setOnClickListener(scrollBottomAction)
+        viewVlog.findViewById<View>(R.id.btnScrollBottomInner)?.setOnClickListener(scrollBottomAction)
+
+        btnVlogPointHistory.setOnClickListener {
+            showPointHistoryDialog()
         }
 
         btnClearVlog.setOnClickListener {
@@ -931,8 +1198,9 @@ class MainActivity : Activity() {
             startActivity(Intent.createChooser(sendIntent, "Chia sẻ nhật ký Vlog"))
         }
 
-        // 6 nút filter tag
+        // 7 nút filter tag
         btnFilterAll.setOnClickListener { setVlogTagFilter(null) }
+        btnFilterPoint.setOnClickListener { setVlogTagFilter("POINT") }
         btnFilterErr.setOnClickListener { setVlogTagFilter("ERR") }
         btnFilterDom.setOnClickListener { setVlogTagFilter("DOM") }
         btnFilterSrch.setOnClickListener { setVlogTagFilter("SRCH") }
@@ -965,7 +1233,6 @@ class MainActivity : Activity() {
                     if (currentTab == 2) {
                         tvNewLogsBadge.text = "+$unreadCountSinceScroll"
                         tvNewLogsBadge.visibility = View.VISIBLE
-                        fabScrollBottom.visibility = View.VISIBLE
                     }
                 }
             }
@@ -1000,9 +1267,283 @@ class MainActivity : Activity() {
             }
         }
 
-        vlogAdapter.submitList(filtered) {
-            if (!isAutoScrollLocked && filtered.isNotEmpty()) {
-                lvVlogTerminal.setSelection(filtered.size - 1)
+        vlogAdapter.submitList(filtered)
+    }
+
+    private data class PointHistoryRecord(
+        val timeFormatted: String,
+        val accountEmail: String,
+        val category: String,
+        val title: String,
+        val pointsDelta: Int
+    )
+
+    private fun classifyPointVlogEntry(entry: VlogEntry, knownEmails: List<String>): PointHistoryRecord? {
+        val msg = entry.message
+        if (msg.contains("Bắt đầu", ignoreCase = true) ||
+            msg.contains("Phát hiện", ignoreCase = true) ||
+            msg.contains("Hoàn thành Daily Task qua HTTP", ignoreCase = true) ||
+            msg.contains("Đang thử", ignoreCase = true) ||
+            msg.contains("Thất bại", ignoreCase = true)
+        ) {
+            return null
+        }
+
+        val resolvedEmail = when {
+            !entry.accountEmail.isNullOrBlank() -> entry.accountEmail
+            else -> knownEmails.firstOrNull { msg.contains(it, ignoreCase = true) }
+                ?: Regex("""([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})""").find(msg)?.groupValues?.getOrNull(1)
+                ?: "Hệ thống"
+        }
+
+        val ptsMatch = Regex("""\+(\d+)\s*(?:pts|đ|điểm)""", RegexOption.IGNORE_CASE).find(msg)
+        val pts = ptsMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+
+        return when {
+            msg.contains("[POINT]", ignoreCase = true) -> {
+                if (pts <= 0) return null
+                PointHistoryRecord(
+                    timeFormatted = entry.timeFormatted,
+                    accountEmail = resolvedEmail,
+                    category = "🔍 Search",
+                    title = msg.substringAfter(":", msg).trim(),
+                    pointsDelta = pts
+                )
+            }
+            msg.contains("[DAPI]", ignoreCase = true) && msg.contains("thành công", ignoreCase = true) -> {
+                PointHistoryRecord(
+                    timeFormatted = entry.timeFormatted,
+                    accountEmail = resolvedEmail,
+                    category = "📱 DAPI",
+                    title = msg.replace("[DAPI]", "").trim(),
+                    pointsDelta = pts
+                )
+            }
+            (msg.contains("[TASK]", ignoreCase = true) || msg.contains("[FAST-PATH]", ignoreCase = true)) &&
+                (msg.contains("Hoàn thành", ignoreCase = true) || msg.contains("cộng điểm", ignoreCase = true)) -> {
+                PointHistoryRecord(
+                    timeFormatted = entry.timeFormatted,
+                    accountEmail = resolvedEmail,
+                    category = "📅 Daily Set",
+                    title = msg.replace("[TASK]", "").replace("[FAST-PATH]", "").trim(),
+                    pointsDelta = pts
+                )
+            }
+            msg.contains("[KEEP-EARNING]", ignoreCase = true) && msg.contains("Hoàn thành", ignoreCase = true) -> {
+                PointHistoryRecord(
+                    timeFormatted = entry.timeFormatted,
+                    accountEmail = resolvedEmail,
+                    category = "⚡ Keep Earning",
+                    title = msg.replace("[KEEP-EARNING]", "").trim(),
+                    pointsDelta = pts
+                )
+            }
+            msg.contains("[READY-TO-CLAIM]", ignoreCase = true) && msg.contains("Đã nhận", ignoreCase = true) -> {
+                PointHistoryRecord(
+                    timeFormatted = entry.timeFormatted,
+                    accountEmail = resolvedEmail,
+                    category = "🎁 Ready to Claim",
+                    title = msg.replace("[READY-TO-CLAIM]", "").trim(),
+                    pointsDelta = pts
+                )
+            }
+            else -> null
+        }
+    }
+
+    private fun showPointHistoryDialog() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                vlogManager.flushNow()
+                val profiles = database.rewardsDao().getAllProfiles()
+                val dbPointLogs = database.vlogDao().getPointHistoryVlogs(600)
+                val combinedLogs = (allVlogsCache + dbPointLogs)
+                    .distinctBy { "${it.timestamp}_${it.message}" }
+                    .sortedByDescending { it.timestamp }
+                val knownEmails = profiles.map { it.email }.filter { it.isNotBlank() }
+                val records = combinedLogs.mapNotNull { classifyPointVlogEntry(it, knownEmails) }
+
+                withContext(AndroidMainDispatcher) {
+                    val density = resources.displayMetrics.density
+                    val root = LinearLayout(this@MainActivity).apply {
+                        orientation = LinearLayout.VERTICAL
+                        setBackgroundColor(Color.parseColor("#0F172A"))
+                        setPadding((16 * density).toInt(), (12 * density).toInt(), (16 * density).toInt(), (8 * density).toInt())
+                    }
+
+                    val accountOptions = mutableListOf("Tất cả tài khoản (${profiles.size})")
+                    profiles.forEach { p ->
+                        if (p.email.isNotBlank()) accountOptions.add(p.email)
+                    }
+                    val categoryOptions = listOf(
+                        "Tất cả nhiệm vụ",
+                        "🔍 Search",
+                        "📅 Daily Set",
+                        "⚡ Keep Earning",
+                        "📱 DAPI",
+                        "🎁 Ready to Claim"
+                    )
+
+                    fun createDarkSpinnerAdapter(items: List<String>) = object : ArrayAdapter<String>(
+                        this@MainActivity,
+                        android.R.layout.simple_spinner_dropdown_item,
+                        items
+                    ) {
+                        override fun getView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                            return super.getView(position, convertView, parent).apply {
+                                (this as? TextView)?.setTextColor(Color.parseColor("#F8FAFC"))
+                            }
+                        }
+
+                        override fun getDropDownView(position: Int, convertView: View?, parent: android.view.ViewGroup): View {
+                            return super.getDropDownView(position, convertView, parent).apply {
+                                setBackgroundColor(Color.parseColor("#1E293B"))
+                                (this as? TextView)?.setTextColor(Color.parseColor("#F8FAFC"))
+                            }
+                        }
+                    }
+
+                    val spAccount = Spinner(this@MainActivity).apply {
+                        setBackgroundResource(R.drawable.bg_pill_dark)
+                        adapter = createDarkSpinnerAdapter(accountOptions)
+                    }
+                    val spCategory = Spinner(this@MainActivity).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT
+                        ).apply {
+                            topMargin = (6 * density).toInt()
+                            bottomMargin = (8 * density).toInt()
+                        }
+                        setBackgroundResource(R.drawable.bg_pill_dark)
+                        adapter = createDarkSpinnerAdapter(categoryOptions)
+                    }
+
+                    val tvSummary = TextView(this@MainActivity).apply {
+                        setTextColor(Color.parseColor("#F8FAFC"))
+                        textSize = 12f
+                        setPadding((10 * density).toInt(), (8 * density).toInt(), (10 * density).toInt(), (8 * density).toInt())
+                        setBackgroundResource(R.drawable.bg_profile_card_dark)
+                    }
+
+                    val scrollHistory = ScrollView(this@MainActivity).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            (300 * density).toInt()
+                        ).apply {
+                            topMargin = (8 * density).toInt()
+                        }
+                        setBackgroundResource(R.drawable.bg_profile_card_dark)
+                    }
+                    val tvHistoryList = TextView(this@MainActivity).apply {
+                        setTextColor(Color.parseColor("#E2E8F0"))
+                        textSize = 11.5f
+                        typeface = Typeface.MONOSPACE
+                        setPadding((8 * density).toInt(), (6 * density).toInt(), (8 * density).toInt(), (6 * density).toInt())
+                    }
+                    scrollHistory.addView(tvHistoryList)
+
+                    val renderFilteredView = {
+                        val accIdx = spAccount.selectedItemPosition
+                        val selectedEmail: String? = if (accIdx <= 0) null else accountOptions.getOrNull(accIdx)
+                        val catIdx = spCategory.selectedItemPosition
+                        val selectedCat: String? = if (catIdx <= 0) null else categoryOptions.getOrNull(catIdx)
+
+                        val targetProfiles = if (selectedEmail == null) profiles else profiles.filter { it.email.equals(selectedEmail, ignoreCase = true) }
+
+                        val pcPts = targetProfiles.sumOf { it.pcProgress }
+                        val mobPts = targetProfiles.sumOf { it.mobileProgress }
+                        val edgePts = targetProfiles.sumOf { it.edgeProgress }
+                        val readPts = targetProfiles.sumOf { it.readProgress }
+                        val earnedToday = targetProfiles.sumOf { it.pointsEarnedToday }
+
+                        var dailyDonePts = 0
+                        var promoDonePts = 0
+                        targetProfiles.forEach { p ->
+                            val tele = RewardsBalanceExtractor.latestTelemetryMap[p.id]
+                                ?: RewardsBalanceExtractor.latestTelemetryMap[p.email]
+                            if (tele != null) {
+                                val dsLimit = tele.dailySetTotal.coerceAtLeast(3)
+                                dailyDonePts += tele.dailyTasks.take(dsLimit).filter { it.isCompleted }.sumOf { it.pointValue }
+                                promoDonePts += tele.dailyTasks.drop(dsLimit).filter { it.isCompleted && it.pointValue > 0 }.sumOf { it.pointValue }
+                            }
+                        }
+
+                        val filteredRecords = records.filter { rec ->
+                            (selectedEmail == null || rec.accountEmail.equals(selectedEmail, ignoreCase = true)) &&
+                            (selectedCat == null || rec.category == selectedCat)
+                        }
+                        val totalLoggedPts = filteredRecords.sumOf { it.pointsDelta }
+
+                        tvSummary.text = buildString {
+                            append("📊 TỔNG HỢP ĐIỂM HÔM NAY (${if (selectedEmail == null) "Tất cả TK" else selectedEmail}):\n")
+                            append("• 🔍 Search: +${pcPts + mobPts + edgePts}đ (PC: $pcPts | Mob: $mobPts | Edge: $edgePts)\n")
+                            append("• 📱 MSN Read: +${readPts}đ | 📅 Daily Set: +${dailyDonePts}đ | ⚡ Keep Earning: +${promoDonePts}đ\n")
+                            append("• 🏆 Tổng điểm hôm nay: +${earnedToday}đ | Nhật ký lọc (${filteredRecords.size} mục): +${totalLoggedPts}đ")
+                        }
+
+                        if (filteredRecords.isEmpty()) {
+                            tvHistoryList.text = buildString {
+                                append("Chưa có bản ghi nhật ký cộng điểm thời gian thực khớp bộ lọc.\n\n")
+                                append("📌 Trạng thái nhiệm vụ từng tài khoản hiện tại:\n")
+                                targetProfiles.forEach { p ->
+                                    val tele = RewardsBalanceExtractor.latestTelemetryMap[p.id]
+                                        ?: RewardsBalanceExtractor.latestTelemetryMap[p.email]
+                                    append("━━━━━━━━━━━━━━━━━━━━\n")
+                                    append("👤 ${p.email} (Lv.${p.level} • Tổng: ${p.availablePoints}đ)\n")
+                                    append("  • Search PC: ${p.pcProgress}/${p.pcMax}đ | Mobile: ${p.mobileProgress}/${p.mobileMax}đ\n")
+                                    append("  • Đọc báo MSN: ${p.readProgress}/${p.readMax}đ | Daily Set: ${p.dailySetProgress}/${p.dailySetTotal}\n")
+                                    if (tele != null) {
+                                        val dsLimit = tele.dailySetTotal.coerceAtLeast(3)
+                                        val completedDaily = tele.dailyTasks.take(dsLimit).filter { it.isCompleted }
+                                        if (completedDaily.isNotEmpty()) {
+                                            completedDaily.forEach { t ->
+                                                append("    ✓ [Daily Set] ${t.title} (+${t.pointValue}đ)\n")
+                                            }
+                                        }
+                                        val completedPromos = tele.dailyTasks.drop(dsLimit).filter { it.isCompleted && it.pointValue > 0 }
+                                        if (completedPromos.isNotEmpty()) {
+                                            completedPromos.take(8).forEach { pr ->
+                                                append("    ✓ [Keep Earning] ${pr.title} (+${pr.pointValue}đ)\n")
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            tvHistoryList.text = filteredRecords.joinToString("\n────────────────────\n") { rec ->
+                                val ptsBadge = if (rec.pointsDelta > 0) "+${rec.pointsDelta}đ" else "✓"
+                                "[${rec.timeFormatted}] ${rec.category} ($ptsBadge) • ${rec.accountEmail}\n↳ ${rec.title}"
+                            }
+                        }
+                    }
+
+                    val itemListener = object : AdapterView.OnItemSelectedListener {
+                        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                            renderFilteredView()
+                        }
+                        override fun onNothingSelected(parent: AdapterView<*>?) {}
+                    }
+                    spAccount.onItemSelectedListener = itemListener
+                    spCategory.onItemSelectedListener = itemListener
+
+                    root.addView(spAccount)
+                    root.addView(spCategory)
+                    root.addView(tvSummary)
+                    root.addView(scrollHistory)
+
+                    renderFilteredView()
+
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("🏆 Lịch Sử Cộng Điểm Từng Nhiệm Vụ & Tài Khoản")
+                        .setView(root)
+                        .setPositiveButton("Đóng", null)
+                        .show()
+                }
+            } catch (e: Exception) {
+                withContext(AndroidMainDispatcher) {
+                    Toast.makeText(this@MainActivity, "Lỗi mở lịch sử điểm: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -1043,28 +1584,81 @@ class MainActivity : Activity() {
         val btnPreset50 = viewSettings.findViewById<Button>(R.id.btnPreset50)
         val btnPreset60 = viewSettings.findViewById<Button>(R.id.btnPreset60)
         swApplyTargetToAll = viewSettings.findViewById(R.id.swApplyTargetToAll)
+        etBatchSize = viewSettings.findViewById(R.id.etBatchSize)
+        etSearchDelayMin = viewSettings.findViewById(R.id.etSearchDelayMin)
+        etSearchDelayMax = viewSettings.findViewById(R.id.etSearchDelayMax)
+        etMaxClaimRetries = viewSettings.findViewById(R.id.etMaxClaimRetries)
+        etDapiMaxRetries = viewSettings.findViewById(R.id.etDapiMaxRetries)
+        etMaxReconciliationPasses = viewSettings.findViewById(R.id.etMaxReconciliationPasses)
+        etCooldownTriggerBatches = viewSettings.findViewById(R.id.etCooldownTriggerBatches)
+        etFrozenStopBatches = viewSettings.findViewById(R.id.etFrozenStopBatches)
+        etProxyCircuitThreshold = viewSettings.findViewById(R.id.etProxyCircuitThreshold)
         etGlobalProxy = viewSettings.findViewById(R.id.etGlobalProxy)
         etUserAgent = viewSettings.findViewById(R.id.etUserAgent)
         etTelegramBotToken = viewSettings.findViewById(R.id.etTelegramBotToken)
         etTelegramChatId = viewSettings.findViewById(R.id.etTelegramChatId)
         btnTestTelegram = viewSettings.findViewById(R.id.btnTestTelegram)
+        btnResetTelegramDefault = viewSettings.findViewById(R.id.btnResetTelegramDefault)
         swDarkMode = viewSettings.findViewById(R.id.swDarkMode)
         swWifiOnly = viewSettings.findViewById(R.id.swWifiOnly)
         swBatteryGuard = viewSettings.findViewById(R.id.swBatteryGuard)
         btnBatteryOptimization = viewSettings.findViewById(R.id.btnBatteryOptimization)
+        swAutoDailySchedule = viewSettings.findViewById(R.id.swAutoDailySchedule)
+        etScheduleSlot1 = viewSettings.findViewById(R.id.etScheduleSlot1)
+        etScheduleSlot2 = viewSettings.findViewById(R.id.etScheduleSlot2)
+        etScheduleSlot3 = viewSettings.findViewById(R.id.etScheduleSlot3)
+        swScheduleSlot1 = viewSettings.findViewById(R.id.swScheduleSlot1)
+        swScheduleSlot2 = viewSettings.findViewById(R.id.swScheduleSlot2)
+        swScheduleSlot3 = viewSettings.findViewById(R.id.swScheduleSlot3)
+        swAutoStopCompleted = viewSettings.findViewById(R.id.swAutoStopCompleted)
+        btnEmergencyReset = viewSettings.findViewById(R.id.btnEmergencyReset)
+        btnHealthCheck = viewSettings.findViewById(R.id.btnHealthCheck)
+        btnVaultBackup = viewSettings.findViewById(R.id.btnVaultBackup)
+        btnVaultRestore = viewSettings.findViewById(R.id.btnVaultRestore)
+        btnForensicShred = viewSettings.findViewById(R.id.btnForensicShred)
         btnSaveSettings = viewSettings.findViewById(R.id.btnSaveSettings)
 
-        // Load cấu hình từ EncryptedPreferences
-        etCooldownMin.setText(prefs.cooldownMin.toString())
-        etCooldownMax.setText(prefs.cooldownMax.toString())
-        etDefaultTargetSearches.setText(prefs.defaultTargetSearches.toString())
-        etGlobalProxy.setText(prefs.globalProxy)
-        etUserAgent.setText(prefs.userAgent)
-        etTelegramBotToken.setText(prefs.telegramBotToken)
-        etTelegramChatId.setText(prefs.telegramChatId)
-        swDarkMode.isChecked = prefs.isDarkMode
-        swWifiOnly.isChecked = prefs.isWifiOnly
-        swBatteryGuard.isChecked = prefs.isBatteryGuardEnabled
+        loadSettingsIntoViews()
+
+        swAutoDailySchedule.setOnCheckedChangeListener { _, isChecked ->
+            prefs.isAutoDailySchedule = isChecked
+            updateScheduleSlotsUiState()
+            if (isChecked) {
+                RewardsForegroundService.scheduleDailyAlarm(this)
+            } else {
+                RewardsForegroundService.cancelDailyAlarm(this)
+            }
+        }
+        swScheduleSlot1.setOnCheckedChangeListener { _, isChecked ->
+            prefs.isScheduleSlot1Enabled = isChecked
+            val s1 = etScheduleSlot1.text.toString().trim()
+            if (EncryptedPreferences.parseTimeSlot(s1) != null) prefs.dailyScheduleSlot1 = s1
+            updateScheduleSlotsUiState()
+            if (prefs.isAutoDailySchedule) {
+                RewardsForegroundService.scheduleDailyAlarm(this)
+            }
+        }
+        swScheduleSlot2.setOnCheckedChangeListener { _, isChecked ->
+            prefs.isScheduleSlot2Enabled = isChecked
+            val s2 = etScheduleSlot2.text.toString().trim()
+            if (EncryptedPreferences.parseTimeSlot(s2) != null) prefs.dailyScheduleSlot2 = s2
+            updateScheduleSlotsUiState()
+            if (prefs.isAutoDailySchedule) {
+                RewardsForegroundService.scheduleDailyAlarm(this)
+            }
+        }
+        swScheduleSlot3.setOnCheckedChangeListener { _, isChecked ->
+            prefs.isScheduleSlot3Enabled = isChecked
+            val s3 = etScheduleSlot3.text.toString().trim()
+            if (EncryptedPreferences.parseTimeSlot(s3) != null) prefs.dailyScheduleSlot3 = s3
+            updateScheduleSlotsUiState()
+            if (prefs.isAutoDailySchedule) {
+                RewardsForegroundService.scheduleDailyAlarm(this)
+            }
+        }
+        swAutoStopCompleted.setOnCheckedChangeListener { _, isChecked ->
+            prefs.isAutoStopOnComplete = isChecked
+        }
 
         // Preset Chips cho Target Searches
         btnPreset15?.setOnClickListener { etDefaultTargetSearches.setText("15") }
@@ -1073,10 +1667,17 @@ class MainActivity : Activity() {
         btnPreset50?.setOnClickListener { etDefaultTargetSearches.setText("50") }
         btnPreset60?.setOnClickListener { etDefaultTargetSearches.setText("60") }
 
+        // Nút Điền Mẫu Mặc Định Telegram
+        btnResetTelegramDefault.setOnClickListener {
+            etTelegramBotToken.setText(EncryptedPreferences.DEFAULT_TELEGRAM_BOT_TOKEN)
+            etTelegramChatId.setText(EncryptedPreferences.DEFAULT_TELEGRAM_CHAT_ID)
+            Toast.makeText(this, "Đã điền cấu hình Telegram mặc định!", Toast.LENGTH_SHORT).show()
+        }
+
         // Nút Test Telegram
         btnTestTelegram.setOnClickListener {
-            val token = etTelegramBotToken.text.toString().trim()
-            val chatId = etTelegramChatId.text.toString().trim()
+            val token = etTelegramBotToken.text.toString().trim().ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_BOT_TOKEN }
+            val chatId = etTelegramChatId.text.toString().trim().ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_CHAT_ID }
             if (token.isEmpty() || chatId.isEmpty()) {
                 Toast.makeText(this, "Vui lòng nhập Bot Token và Chat ID trước", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
@@ -1099,23 +1700,73 @@ class MainActivity : Activity() {
             requestBatteryOptimizationExemption()
         }
 
+        // 1. Health Check (5 hạng mục)
+        btnHealthCheck.setOnClickListener {
+            HealthCheckDialog(this).show()
+        }
+
+        // 2. Khôi phục khẩn cấp (1-Tap Emergency Reset)
+        btnEmergencyReset.setOnClickListener {
+            showEmergencyResetDialog()
+        }
+
+        // 3. Dọn dẹp & Zero-Fill Shred Logs > 7 ngày
+        btnForensicShred.setOnClickListener {
+            showForensicShredDialog()
+        }
+
+        // 4. Sao lưu Vault (.rbkp)
+        btnVaultBackup.setOnClickListener {
+            showVaultBackupDialog()
+        }
+
+        // 5. Phục hồi Vault (.rbkp)
+        btnVaultRestore.setOnClickListener {
+            showVaultRestoreEntryDialog()
+        }
+
         // Nút Lưu Cấu Hình
         btnSaveSettings.setOnClickListener {
-            val min = etCooldownMin.text.toString().toIntOrNull() ?: 15
-            val max = etCooldownMax.text.toString().toIntOrNull() ?: 22
+            val min = (etCooldownMin.text.toString().toIntOrNull() ?: 15).coerceIn(1, 240)
+            val max = maxOf(min, (etCooldownMax.text.toString().toIntOrNull() ?: 22).coerceIn(1, 360))
             val target = etDefaultTargetSearches.text.toString().toIntOrNull()?.coerceIn(10, 60) ?: 35
 
             prefs.cooldownMin = min
             prefs.cooldownMax = max
             prefs.cooldownMinutes = (min + max) / 2
             prefs.defaultTargetSearches = target
+            prefs.batchSize = etBatchSize.text.toString().toIntOrNull()?.coerceIn(1, 10) ?: 3
+            val sDelayMin = etSearchDelayMin.text.toString().toIntOrNull()?.coerceIn(5, 180) ?: 18
+            val sDelayMax = maxOf(sDelayMin, etSearchDelayMax.text.toString().toIntOrNull()?.coerceIn(10, 300) ?: 45)
+            prefs.searchDelayMinSec = sDelayMin
+            prefs.searchDelayMaxSec = sDelayMax
+            prefs.maxClaimRetries = etMaxClaimRetries.text.toString().toIntOrNull()?.coerceIn(1, 5) ?: 2
+            prefs.dapiMaxRetries = etDapiMaxRetries.text.toString().toIntOrNull()?.coerceIn(1, 5) ?: 2
+            prefs.maxReconciliationPasses = etMaxReconciliationPasses.text.toString().toIntOrNull()?.coerceIn(0, 5) ?: 2
+            prefs.cooldownTriggerBatches = etCooldownTriggerBatches.text.toString().toIntOrNull()?.coerceIn(1, 5) ?: 2
+            prefs.frozenStopBatches = etFrozenStopBatches.text.toString().toIntOrNull()?.coerceIn(2, 8) ?: 3
+            prefs.proxyCircuitThreshold = etProxyCircuitThreshold.text.toString().toIntOrNull()?.coerceIn(1, 10) ?: 3
+            prefs.dailyScheduleSlot1 = etScheduleSlot1.text.toString().trim()
+            prefs.dailyScheduleSlot2 = etScheduleSlot2.text.toString().trim()
+            prefs.dailyScheduleSlot3 = etScheduleSlot3.text.toString().trim()
+            prefs.isScheduleSlot1Enabled = swScheduleSlot1.isChecked
+            prefs.isScheduleSlot2Enabled = swScheduleSlot2.isChecked
+            prefs.isScheduleSlot3Enabled = swScheduleSlot3.isChecked
             prefs.globalProxy = etGlobalProxy.text.toString().trim()
             prefs.userAgent = etUserAgent.text.toString().trim()
-            prefs.telegramBotToken = etTelegramBotToken.text.toString().trim()
-            prefs.telegramChatId = etTelegramChatId.text.toString().trim()
+            prefs.telegramBotToken = etTelegramBotToken.text.toString().trim().ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_BOT_TOKEN }
+            prefs.telegramChatId = etTelegramChatId.text.toString().trim().ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_CHAT_ID }
             prefs.isDarkMode = swDarkMode.isChecked
             prefs.isWifiOnly = swWifiOnly.isChecked
             prefs.isBatteryGuardEnabled = swBatteryGuard.isChecked
+            prefs.isAutoDailySchedule = swAutoDailySchedule.isChecked
+            prefs.isAutoStopOnComplete = swAutoStopCompleted.isChecked
+
+            if (prefs.isAutoDailySchedule) {
+                RewardsForegroundService.scheduleDailyAlarm(this)
+            } else {
+                RewardsForegroundService.cancelDailyAlarm(this)
+            }
 
             if (swApplyTargetToAll.isChecked) {
                 scope.launch(Dispatchers.IO) {
@@ -1123,7 +1774,377 @@ class MainActivity : Activity() {
                 }
             }
 
+            loadSettingsIntoViews()
             Toast.makeText(this, "Đã lưu toàn bộ cấu hình hệ thống!", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun updateScheduleSlotsUiState() {
+        val masterEnabled = swAutoDailySchedule.isChecked
+        swScheduleSlot1.isEnabled = masterEnabled
+        swScheduleSlot2.isEnabled = masterEnabled
+        swScheduleSlot3.isEnabled = masterEnabled
+        swScheduleSlot1.alpha = if (masterEnabled) 1.0f else 0.45f
+        swScheduleSlot2.alpha = if (masterEnabled) 1.0f else 0.45f
+        swScheduleSlot3.alpha = if (masterEnabled) 1.0f else 0.45f
+
+        val s1Active = masterEnabled && swScheduleSlot1.isChecked
+        val s2Active = masterEnabled && swScheduleSlot2.isChecked
+        val s3Active = masterEnabled && swScheduleSlot3.isChecked
+
+        etScheduleSlot1.isEnabled = s1Active
+        etScheduleSlot1.alpha = if (s1Active) 1.0f else 0.35f
+        etScheduleSlot2.isEnabled = s2Active
+        etScheduleSlot2.alpha = if (s2Active) 1.0f else 0.35f
+        etScheduleSlot3.isEnabled = s3Active
+        etScheduleSlot3.alpha = if (s3Active) 1.0f else 0.35f
+    }
+
+    private fun loadSettingsIntoViews() {
+        etCooldownMin.setText(prefs.cooldownMin.toString())
+        etCooldownMax.setText(prefs.cooldownMax.toString())
+        etDefaultTargetSearches.setText(prefs.defaultTargetSearches.toString())
+        etBatchSize.setText(prefs.batchSize.toString())
+        etSearchDelayMin.setText(prefs.searchDelayMinSec.toString())
+        etSearchDelayMax.setText(prefs.searchDelayMaxSec.toString())
+        etMaxClaimRetries.setText(prefs.maxClaimRetries.toString())
+        etDapiMaxRetries.setText(prefs.dapiMaxRetries.toString())
+        etMaxReconciliationPasses.setText(prefs.maxReconciliationPasses.toString())
+        etCooldownTriggerBatches.setText(prefs.cooldownTriggerBatches.toString())
+        etFrozenStopBatches.setText(prefs.frozenStopBatches.toString())
+        etProxyCircuitThreshold.setText(prefs.proxyCircuitThreshold.toString())
+        etScheduleSlot1.setText(prefs.dailyScheduleSlot1)
+        etScheduleSlot2.setText(prefs.dailyScheduleSlot2)
+        etScheduleSlot3.setText(prefs.dailyScheduleSlot3)
+        swScheduleSlot1.isChecked = prefs.isScheduleSlot1Enabled
+        swScheduleSlot2.isChecked = prefs.isScheduleSlot2Enabled
+        swScheduleSlot3.isChecked = prefs.isScheduleSlot3Enabled
+        etGlobalProxy.setText(prefs.globalProxy)
+        etUserAgent.setText(prefs.userAgent)
+        etTelegramBotToken.setText(prefs.telegramBotToken.ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_BOT_TOKEN })
+        etTelegramChatId.setText(prefs.telegramChatId.ifBlank { EncryptedPreferences.DEFAULT_TELEGRAM_CHAT_ID })
+        swDarkMode.isChecked = prefs.isDarkMode
+        swWifiOnly.isChecked = prefs.isWifiOnly
+        swBatteryGuard.isChecked = prefs.isBatteryGuardEnabled
+        swAutoDailySchedule.isChecked = prefs.isAutoDailySchedule
+        swAutoStopCompleted.isChecked = prefs.isAutoStopOnComplete
+        tvTelemetrySafety?.text = "Cooldown ${prefs.cooldownMin}-${prefs.cooldownMax}p"
+        updateScheduleSlotsUiState()
+    }
+
+    private fun stopNodeServiceIfRunning() {
+        if (prefs.isNodeServiceRunning) {
+            val intent = Intent(this, RewardsForegroundService::class.java).apply {
+                action = RewardsForegroundService.ACTION_STOP
+            }
+            startService(intent)
+            prefs.isNodeServiceRunning = false
+            updateServiceUIState()
+        }
+    }
+
+    private fun showEmergencyResetDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("⚡ Khôi Phục Khẩn Cấp (1-Tap Reset)")
+            .setMessage("Thao tác này sẽ:\n• Dừng ngay lập tức dịch vụ chạy ngầm\n• Xóa sạch Cookie/Cache/Proxy phiên WebView hiện thời\n• Đặt lại thời gian chờ Cooldown của tất cả tài khoản về 0\n\nDữ liệu tài khoản và Cookie lưu trong DB vẫn được giữ nguyên an toàn.")
+            .setPositiveButton("Thực Hiện Reset") { _, _ ->
+                stopNodeServiceIfRunning()
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        val pm = ProfileManager(this@MainActivity)
+                        pm.clearActiveSession()
+                        pm.clearWebViewProxy()
+                        val allProfiles = database.rewardsDao().getAllProfiles()
+                        if (allProfiles.isNotEmpty()) {
+                            val resetProfiles = allProfiles.map { it.copy(cooldownUntilTimestamp = 0L) }
+                            database.rewardsDao().insertOrUpdateProfilesBatch(resetProfiles)
+                        }
+                        vlogManager.postLog("SYS", "INFO", "Đã thực thi 1-Tap Emergency Reset (xóa phiên WebView & reset cooldown)")
+                        withContext(AndroidMainDispatcher) {
+                            Toast.makeText(this@MainActivity, "✅ Đã khôi phục khẩn cấp & xóa trạng thái treo thành công!", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        withContext(AndroidMainDispatcher) {
+                            Toast.makeText(this@MainActivity, "Lỗi khi reset: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun showForensicShredDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("🧹 Dọn Dẹp & Zero-Fill Shred")
+            .setMessage("Bạn có muốn ghi đè byte 0x00 (Zero-Fill Shred) toàn bộ DOM Snapshot và cắt tỉa nhật ký Vlog cũ hơn 7 ngày kèm nén VACUUM cơ sở dữ liệu không?")
+            .setPositiveButton("Dọn Dẹp Ngay") { _, _ ->
+                scope.launch(Dispatchers.IO) {
+                    val report = ForensicShredder(this@MainActivity).shredSnapshotsAndOldLogs(7)
+                    vlogManager.postLog(
+                        "SYS",
+                        "INFO",
+                        "Forensic Shred hoàn tất trong ${report.durationMs}ms: ${report.filesShredded} files, ${report.logsPruned} logs, VACUUM=${report.vacuumCompleted}"
+                    )
+                    withContext(AndroidMainDispatcher) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "🧹 Đã hủy ${report.filesShredded} snapshot, xóa ${report.logsPruned} log cũ (${report.durationMs}ms)",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun showVaultBackupDialog() {
+        val etPassword = EditText(this).apply {
+            hint = "Nhập mật khẩu khóa sao lưu (.rbkp)"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(36, 28, 36, 28)
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 8)
+            addView(etPassword)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🛡️ Sao Lưu Hồ Sơ Mã Hóa (.rbkp)")
+            .setMessage("Toàn bộ tài khoản (kể cả tài khoản đang tắt), Cookie, Token và cấu hình sẽ được mã hóa chuẩn quân sự PBKDF2-HMAC-SHA256 + AES-256-GCM:")
+            .setView(container)
+            .setPositiveButton("Tạo Bản Sao Lưu") { _, _ ->
+                val editable = etPassword.text
+                val passwordChars = CharArray(editable.length) { editable[it] }
+                editable.clear()
+                if (passwordChars.isEmpty()) {
+                    Toast.makeText(this, "Mật khẩu sao lưu không được để trống!", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+                val backupDir = getExternalFilesDir("backups") ?: File(filesDir, "backups")
+                val backupFile = File(backupDir, "RewardsNode_Backup_${timestamp}.rbkp")
+
+                scope.launch(Dispatchers.IO) {
+                    val result = try {
+                        VaultBackupManager(this@MainActivity).exportVaultBackup(passwordChars, backupFile)
+                    } finally {
+                        passwordChars.fill('\u0000')
+                    }
+
+                    withContext(AndroidMainDispatcher) {
+                        result.onSuccess { meta ->
+                            pendingBackupFile = backupFile
+                            vlogManager.postLog("SYS", "INFO", "Đã xuất bản sao lưu Vault: ${meta.fileName} (${meta.totalProfiles} tài khoản)")
+                            AlertDialog.Builder(this@MainActivity)
+                                .setTitle("✅ Sao Lưu Thành Công")
+                                .setMessage("Đã đóng gói ${meta.totalProfiles} tài khoản vào:\n${backupFile.name}\n\nBạn muốn xuất file sao lưu này đi đâu?")
+                                .setPositiveButton("💾 Lưu Ra Máy (SAF)") { _, _ ->
+                                    val createIntent = Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                        addCategory(Intent.CATEGORY_OPENABLE)
+                                        type = "application/octet-stream"
+                                        putExtra(Intent.EXTRA_TITLE, backupFile.name)
+                                    }
+                                    try {
+                                        @Suppress("DEPRECATION")
+                                        startActivityForResult(createIntent, REQ_CREATE_BACKUP_DOC)
+                                    } catch (e: Exception) {
+                                        Toast.makeText(this@MainActivity, "Không thể mở trình chọn file: ${e.message}", Toast.LENGTH_LONG).show()
+                                    }
+                                }
+                                .setNeutralButton("✈️ Gửi Qua Telegram") { _, _ ->
+                                    val token = prefs.telegramBotToken
+                                    val chatId = prefs.telegramChatId
+                                    if (token.isBlank() || chatId.isBlank()) {
+                                        Toast.makeText(this@MainActivity, "Chưa cấu hình Telegram Bot Token / Chat ID!", Toast.LENGTH_SHORT).show()
+                                        return@setNeutralButton
+                                    }
+                                    Toast.makeText(this@MainActivity, "Đang tải file sao lưu lên Telegram...", Toast.LENGTH_SHORT).show()
+                                    scope.launch(Dispatchers.IO) {
+                                        val caption = "🛡️ Bản sao lưu mã hóa RewardsNode\n• Số tài khoản: ${meta.totalProfiles}\n• Tệp: ${meta.fileName}"
+                                        val sent = TelegramNotifier(token, chatId).sendDocument(backupFile, caption)
+                                        withContext(AndroidMainDispatcher) {
+                                            if (sent) {
+                                                Toast.makeText(this@MainActivity, "✅ Đã gửi file .rbkp về Telegram thành công!", Toast.LENGTH_LONG).show()
+                                            } else {
+                                                Toast.makeText(this@MainActivity, "❌ Gửi file qua Telegram thất bại!", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
+                                    }
+                                }
+                                .setNegativeButton("Đóng", null)
+                                .show()
+                        }.onFailure { err ->
+                            Toast.makeText(this@MainActivity, "❌ Lỗi sao lưu: ${err.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Hủy", null)
+            .show()
+    }
+
+    private fun showVaultRestoreEntryDialog() {
+        val backupDir = getExternalFilesDir("backups") ?: File(filesDir, "backups")
+        val latestBackup = backupDir.listFiles { f -> f.isFile && f.name.endsWith(".rbkp", ignoreCase = true) }
+            ?.maxByOrNull { it.lastModified() }
+
+        val openSafPicker = {
+            val openIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+            try {
+                @Suppress("DEPRECATION")
+                startActivityForResult(openIntent, REQ_OPEN_BACKUP_DOC)
+            } catch (e: Exception) {
+                Toast.makeText(this, "Không thể mở trình chọn file: ${e.message}", Toast.LENGTH_LONG).show()
+            }
+        }
+
+        if (latestBackup != null) {
+            AlertDialog.Builder(this)
+                .setTitle("📥 Phục Hồi Hồ Sơ (.rbkp)")
+                .setMessage("Tìm thấy bản sao lưu nội bộ gần nhất:\n${latestBackup.name}\n\nBạn muốn khôi phục từ bản này hay chọn file .rbkp từ bộ nhớ máy?")
+                .setPositiveButton("📂 Chọn File Từ Máy") { _, _ -> openSafPicker() }
+                .setNeutralButton("⚡ Dùng Bản Gần Nhất") { _, _ ->
+                    showRestorePasswordDialog(latestBackup, isTempFile = false)
+                }
+                .setNegativeButton("Hủy", null)
+                .show()
+        } else {
+            openSafPicker()
+        }
+    }
+
+    private fun showRestorePasswordDialog(targetFile: File, isTempFile: Boolean) {
+        val etPassword = EditText(this).apply {
+            hint = "Nhập mật khẩu giải mã file .rbkp"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setPadding(36, 28, 36, 28)
+        }
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 24, 48, 8)
+            addView(etPassword)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("🔓 Giải Mã & Khôi Phục (.rbkp)")
+            .setMessage("Tệp: ${targetFile.name}\nNhập mật khẩu để giải mã và khôi phục toàn bộ tài khoản cùng cài đặt:")
+            .setView(container)
+            .setPositiveButton("Khôi Phục Ngay") { _, _ ->
+                val editable = etPassword.text
+                val passwordChars = CharArray(editable.length) { editable[it] }
+                editable.clear()
+                if (passwordChars.isEmpty()) {
+                    if (isTempFile) targetFile.delete()
+                    Toast.makeText(this, "Vui lòng nhập mật khẩu giải mã!", Toast.LENGTH_SHORT).show()
+                    return@setPositiveButton
+                }
+
+                stopNodeServiceIfRunning()
+
+                scope.launch(Dispatchers.IO) {
+                    val result = try {
+                        VaultBackupManager(this@MainActivity).importVaultBackup(
+                            password = passwordChars,
+                            inputFile = targetFile,
+                            restorePreferences = true
+                        )
+                    } finally {
+                        passwordChars.fill('\u0000')
+                        if (isTempFile) {
+                            targetFile.delete()
+                        }
+                    }
+
+                    withContext(AndroidMainDispatcher) {
+                        result.onSuccess { count ->
+                            loadSettingsIntoViews()
+                            updateServiceUIState()
+                            syncActiveProfilesBalance(isUserTriggered = false)
+                            vlogManager.postLog("SYS", "INFO", "Đã khôi phục thành công $count tài khoản từ bản sao lưu Vault")
+                            Toast.makeText(
+                                this@MainActivity,
+                                "✅ Đã khôi phục thành công $count tài khoản & cấu hình!",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }.onFailure { err ->
+                            Toast.makeText(
+                                this@MainActivity,
+                                "❌ Khôi phục thất bại: ${err.message}",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            }
+            .setNegativeButton("Hủy") { _, _ ->
+                if (isTempFile) targetFile.delete()
+            }
+            .setOnCancelListener {
+                if (isTempFile) targetFile.delete()
+            }
+            .show()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != RESULT_OK || data?.data == null) return
+        val uri = data.data ?: return
+
+        when (requestCode) {
+            REQ_CREATE_BACKUP_DOC -> {
+                val srcFile = pendingBackupFile
+                if (srcFile == null || !srcFile.exists()) {
+                    Toast.makeText(this, "Không tìm thấy file sao lưu nguồn!", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                scope.launch(Dispatchers.IO) {
+                    try {
+                        contentResolver.openOutputStream(uri)?.use { outStream ->
+                            FileInputStream(srcFile).use { inStream ->
+                                inStream.copyTo(outStream, bufferSize = 8192)
+                            }
+                            outStream.flush()
+                        }
+                        withContext(AndroidMainDispatcher) {
+                            Toast.makeText(this@MainActivity, "✅ Đã lưu file .rbkp ra bộ nhớ máy thành công!", Toast.LENGTH_LONG).show()
+                        }
+                    } catch (e: Exception) {
+                        withContext(AndroidMainDispatcher) {
+                            Toast.makeText(this@MainActivity, "❌ Lỗi ghi file: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+            REQ_OPEN_BACKUP_DOC -> {
+                scope.launch(Dispatchers.IO) {
+                    val tempFile = File(cacheDir, "vault_restore_import_${System.currentTimeMillis()}.rbkp")
+                    try {
+                        contentResolver.openInputStream(uri)?.use { inStream ->
+                            FileOutputStream(tempFile).use { outStream ->
+                                inStream.copyTo(outStream, bufferSize = 8192)
+                                outStream.flush()
+                            }
+                        }
+                        withContext(AndroidMainDispatcher) {
+                            showRestorePasswordDialog(tempFile, isTempFile = true)
+                        }
+                    } catch (e: Exception) {
+                        tempFile.delete()
+                        withContext(AndroidMainDispatcher) {
+                            Toast.makeText(this@MainActivity, "❌ Không thể đọc file đã chọn: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1170,6 +2191,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        countdownTickerJob?.cancel()
         searchDebounceJob?.cancel()
         scope.cancel()
     }

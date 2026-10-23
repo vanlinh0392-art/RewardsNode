@@ -19,7 +19,7 @@ import java.util.zip.GZIPOutputStream
 /**
  * Bộ điều phối hệ thống Vlog (Visual & Event Logging) 2 tầng:
  * - Tầng 1: Circular RingBuffer (RAM, max 500 mục) kết nối StateFlow để UI render 60fps mượt mà không tốn I/O.
- * - Tầng 2: Ghi bất đồng bộ theo mẻ (Batch commit 2s hoặc 50 mục) xuống SQLite WAL.
+ * - Tầng 2: Ghi bất đồng bộ Event-Driven theo mẻ (Batch commit 2s hoặc >= 30 mục) xuống SQLite WAL, tối ưu Doze Mode.
  * - Tự động chụp DOM Snapshot nén .html.gz khi phát hiện lỗi hoặc timeout.
  */
 class VlogManager private constructor(private val context: Context) {
@@ -30,31 +30,40 @@ class VlogManager private constructor(private val context: Context) {
     private val ringBuffer = ConcurrentLinkedDeque<VlogEntry>()
     private val maxRamEntries = 500
 
-    private val pendingPersistQueue = ConcurrentLinkedDeque<VlogEntry>()
+    private val pendingLogs = ConcurrentLinkedDeque<VlogEntry>()
+    @Volatile
+    private var flushJob: Job? = null
+
     private val _logsStateFlow = MutableStateFlow<List<VlogEntry>>(emptyList())
     val logsStateFlow: StateFlow<List<VlogEntry>> = _logsStateFlow.asStateFlow()
 
     private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
 
     init {
-        // Luồng ghi mẻ định kỳ xuống SQLite WAL
         scope.launch {
-            while (isActive) {
-                delay(2000L)
-                flushPendingToDatabase()
-            }
+            try {
+                val recentDbLogs = database.vlogDao().getRecentVlogs(maxRamEntries)
+                if (ringBuffer.isEmpty() && recentDbLogs.isNotEmpty()) {
+                    ringBuffer.addAll(recentDbLogs)
+                    _logsStateFlow.value = ringBuffer.toList()
+                }
+            } catch (_: Exception) {}
         }
+    }
+
+    suspend fun flushNow() {
+        flushPendingToDatabase()
     }
 
     private fun sanitizeSensitiveData(text: String?): String? {
         if (text == null) return null
         return text
-            .replace(Regex("""bot\d+:[A-Za-z0-9_-]+"""), "bot***:***")
-            .replace(Regex("""(?i)(password|passwd|pwd|secret)[=:\s]+[^\s&]+"""), "$1=***")
-            .replace(Regex("""(?i)(Bearer\s+)[A-Za-z0-9._-]+"""), "$1***")
+            .replace(REGEX_BOT_TOKEN, "bot***:***")
+            .replace(REGEX_SECRET_KV, "$1=***")
+            .replace(REGEX_BEARER_TOKEN, "$1***")
     }
 
-    private fun postLog(
+    fun postLog(
         tag: String,
         level: String,
         message: String,
@@ -98,24 +107,35 @@ class VlogManager private constructor(private val context: Context) {
         // Cập nhật StateFlow cho UI
         _logsStateFlow.value = ringBuffer.toList()
 
-        // Đưa vào hàng đợi lưu SQLite
-        pendingPersistQueue.add(entry)
+        // Đưa vào hàng đợi lưu SQLite theo cơ chế Event-Driven (Zero-Timer khi rỗi)
+        pendingLogs.add(entry)
+        if (pendingLogs.size >= 30) {
+            flushJob?.cancel()
+            scope.launch {
+                flushPendingToDatabase()
+            }
+        } else if (flushJob?.isActive != true) {
+            flushJob = scope.launch {
+                delay(2000L)
+                flushPendingToDatabase()
+            }
+        }
     }
 
     private suspend fun flushPendingToDatabase() {
-        if (pendingPersistQueue.isEmpty()) return
+        while (!pendingLogs.isEmpty()) {
+            val batch = mutableListOf<VlogEntry>()
+            while (batch.size < 100) {
+                val item = pendingLogs.poll() ?: break
+                batch.add(item)
+            }
 
-        val batch = mutableListOf<VlogEntry>()
-        while (batch.size < 100) {
-            val item = pendingPersistQueue.poll() ?: break
-            batch.add(item)
-        }
-
-        if (batch.isNotEmpty()) {
-            try {
-                database.vlogDao().insertVlogs(batch)
-            } catch (e: Exception) {
-                e.printStackTrace()
+            if (batch.isNotEmpty()) {
+                try {
+                    database.vlogDao().insertVlogs(batch)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
         }
     }
@@ -180,8 +200,8 @@ class VlogManager private constructor(private val context: Context) {
                             try {
                                 // Xóa thông tin nhạy cảm trước khi nén
                                 val sanitized = rawHtml
-                                    .replace(Regex(""""password"\s*:\s*"[^"]*""""), """"password":"***"""")
-                                    .replace(Regex("""value="[^"]*""""), """value="***"""")
+                                    .replace(REGEX_JSON_PASSWORD, """"password":"***"""")
+                                    .replace(REGEX_HTML_VALUE, """value="***"""")
 
                                 GZIPOutputStream(FileOutputStream(snapshotFile)).use { gzip ->
                                     gzip.write(sanitized.toByteArray(Charsets.UTF_8))
@@ -201,8 +221,9 @@ class VlogManager private constructor(private val context: Context) {
     }
 
     fun clearLogs() {
+        flushJob?.cancel()
         ringBuffer.clear()
-        pendingPersistQueue.clear()
+        pendingLogs.clear()
         _logsStateFlow.value = emptyList()
         scope.launch {
             database.vlogDao().clearAllVlogs()
@@ -217,6 +238,12 @@ class VlogManager private constructor(private val context: Context) {
     }
 
     companion object {
+        private val REGEX_BOT_TOKEN = Regex("""(?:bot)?\d{8,12}:[A-Za-z0-9_-]{25,}|bot\d+:[A-Za-z0-9_-]+""")
+        private val REGEX_SECRET_KV = Regex("""(?i)(password|passwd|pwd|secret|dapiRefreshToken|dapiAccessToken)[=:\s]+[^\s&,;)]+""")
+        private val REGEX_BEARER_TOKEN = Regex("""(?i)(Bearer\s+)(?!token(?:\s|$|[.,;)]))[^\s\x22',;)]+""")
+        private val REGEX_JSON_PASSWORD = Regex(""""password"\s*:\s*"[^"]*"""")
+        private val REGEX_HTML_VALUE = Regex("""value="[^"]*"""")
+
         @Volatile
         private var INSTANCE: VlogManager? = null
 

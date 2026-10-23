@@ -14,6 +14,7 @@ import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import com.agy.rewardsnode.R
+import com.agy.rewardsnode.core.FingerprintEngine
 import com.agy.rewardsnode.core.ProfileManager
 import com.agy.rewardsnode.core.RewardsBalanceExtractor
 import com.agy.rewardsnode.core.VlogManager
@@ -23,6 +24,7 @@ import com.agy.rewardsnode.utils.AndroidMainDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -61,6 +63,8 @@ class LoginDialog(
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        ProfileManager.isInteractiveLoginActive = true
+        ProfileManager.interactiveLoginProfileId = profileId
         setContentView(R.layout.dialog_login_bottom_sheet)
 
         tvTitle = findViewById(R.id.tvSheetTitle)
@@ -96,38 +100,36 @@ class LoginDialog(
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
+        // 1. Triệt tiêu cờ X-Requested-With để không làm lộ package name com.agy.rewardsnode lên login.live.com
+        FingerprintEngine.stripXRequestedWith(webView)
+
+        // 2. Sử dụng preset chuẩn Mobile Edge 133 Android (EdgA) khớp với phần cứng Xiaomi 14 Android 14
+        val loginPreset = FingerprintEngine.getMobileLoginPreset()
+
         // Kích hoạt chấp nhận cookie của bên thứ ba trong quá trình chuyển tiếp SSO giữa live.com và bing.com
         val cookieManager = CookieManager.getInstance()
         cookieManager.setAcceptCookie(true)
         cookieManager.setAcceptThirdPartyCookies(webView, true)
 
-        // Dọn sạch session cũ một cách đồng bộ an toàn qua coroutine để tránh Session Bleeding
-        scope.launch(AndroidMainDispatcher) {
-            profileManager.clearActiveSession(webView)
-
-            // Nạp lại cookie đã lưu nếu là phiên đăng nhập lại
-            if (existingAccountId != null) {
-                val acc = withContext(Dispatchers.IO) {
-                    database.rewardsDao().getProfileById(existingAccountId)
-                }
-                if (acc != null) {
-                    profileManager.restoreCookiesForProfile(existingAccountId, acc.cookiesSnapshot)
-                    vlog.logSystem("Đã nạp lại cookie của profile cũ", "Email=${acc.email}")
-                }
-            }
-        }
-
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             databaseEnabled = true
-            userAgentString = "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36 EdgA/128.0.0.0"
+            textZoom = 100
+            useWideViewPort = true
+            loadWithOverviewMode = true
+            userAgentString = loginPreset.userAgent
         }
 
         webView.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 pbLoading.visibility = View.VISIBLE
                 Log.d("LoginDialog", "Bắt đầu tải URL: $url")
+
+                // Tiêm stealth script ngay khi bắt đầu tải trang: loại bỏ hoàn toàn "Android WebView" trong Client Hints
+                // và cloaking [native code] để vượt qua bộ kiểm tra an toàn trình duyệt của Microsoft
+                val stealthScript = FingerprintEngine.createStealthScript(loginPreset, isDesktop = false)
+                view?.evaluateJavascript(stealthScript, null)
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -137,6 +139,10 @@ class LoginDialog(
                 val currentUrl = url ?: ""
                 vlog.logNetwork("WebView tải xong trang", currentUrl)
                 Log.i("LoginDialog", "Tải xong URL: $currentUrl")
+
+                // Tái kích hoạt stealth script sau khi trang tải xong cho dynamic DOM / SPA navigations
+                val stealthScript = FingerprintEngine.createStealthScript(loginPreset, isDesktop = false)
+                view?.evaluateJavascript(stealthScript, null)
 
                 // Tự động điều hướng về rewards.bing.com nếu hoàn tất đăng nhập tại live.com mà chưa chuyển trang
                 if ((currentUrl.contains("account.microsoft.com") || currentUrl.contains("login.live.com/ppsecure/post.srf")) &&
@@ -155,15 +161,18 @@ class LoginDialog(
                     return
                 }
 
-                // Cập nhật trạng thái nhận diện phiên hợp lệ đa tầng
+                // Cập nhật trạng thái nhận diện phiên hợp lệ đa tầng (chỉ bật nút Lưu khi đã rời about:blank và trang login.srf)
+                val isStillAtLoginScreen = currentUrl.isBlank() ||
+                    currentUrl.startsWith("about:blank") ||
+                    currentUrl.contains("login.live.com/login.srf", ignoreCase = true)
                 CookieManager.getInstance().flush()
-                val hasBingSession = profileManager.hasValidBingSession()
+                val hasBingSession = !isStillAtLoginScreen && profileManager.hasValidBingSession()
                 if (hasBingSession) {
                     btnSave.isEnabled = true
                     btnSave.alpha = 1.0f
                     tvTitle.text = if (currentUrl.contains("rewards.bing.com")) "Đã đăng nhập Microsoft Rewards! Nhấn Lưu phiên" else "Đã nhận diện phiên Bing! Nhấn Lưu phiên"
                     vlog.logSystem("Đã nhận diện phiên hợp lệ! Nút Lưu phiên sẵn sàng", currentUrl)
-                } else if (currentUrl.contains("bing.com") || currentUrl.contains("rewards")) {
+                } else if (!isStillAtLoginScreen && (currentUrl.contains("bing.com") || currentUrl.contains("rewards"))) {
                     view?.postDelayed({
                         CookieManager.getInstance().flush()
                         if (profileManager.hasValidBingSession()) {
@@ -177,10 +186,31 @@ class LoginDialog(
             }
         }
 
-        // Luôn kèm wreply trỏ về rewards.bing.com để kích hoạt giao thức RPS Handshake sinh cookie _U
-        val startUrl = "https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=150&ct=1720000000&rver=7.5.2156.0&wp=MBI_SSL&wreply=https%3A%2F%2Frewards.bing.com%2F"
-        vlog.logNetwork("Nạp URL bắt đầu đăng nhập Microsoft", startUrl)
-        webView.loadUrl(startUrl)
+        // Dọn sạch session cũ một cách đồng bộ an toàn qua coroutine để tránh Session Bleeding.
+        // Chỉ gọi loadUrl() sau khi xóa cookie (hoặc khôi phục cookie cũ nếu re-auth) hoàn tất 100%
+        // để chống race condition cookie cũ bị gửi đi trong HTTP Request đầu tiên.
+        scope.launch(AndroidMainDispatcher) {
+            ProfileManager.isInteractiveLoginActive = true
+            ProfileManager.interactiveLoginProfileId = profileId
+            profileManager.clearActiveSession(webView)
+
+            // Nạp lại cookie đã lưu nếu là phiên đăng nhập lại
+            if (existingAccountId != null) {
+                val acc = withContext(Dispatchers.IO) {
+                    database.rewardsDao().getProfileById(existingAccountId)
+                }
+                if (acc != null) {
+                    profileManager.restoreCookiesForProfile(existingAccountId, acc.cookiesSnapshot)
+                    vlog.logSystem("Đã nạp lại cookie của profile cũ", "Email=${acc.email}")
+                }
+            }
+
+            // Luôn kèm wreply trỏ về rewards.bing.com để kích hoạt giao thức RPS Handshake sinh cookie _U
+            val baseStartUrl = "https://login.live.com/login.srf?wa=wsignin1.0&rpsnv=150&ct=1720000000&rver=7.5.2156.0&wp=MBI_SSL&wreply=https%3A%2F%2Frewards.bing.com%2F"
+            val startUrl = if (existingAccountId == null) "$baseStartUrl&prompt=login" else baseStartUrl
+            vlog.logNetwork("Nạp URL bắt đầu đăng nhập Microsoft", startUrl)
+            webView.loadUrl(startUrl)
+        }
     }
 
     private fun lockUiForSync() {
@@ -270,9 +300,22 @@ class LoginDialog(
             withContext(AndroidMainDispatcher) {
                 CookieManager.getInstance().flush()
             }
-            val finalCookies = profileManager.dumpCookiesForProfile(profileId)
+            val finalCookies = ProfileManager.sanitizeCookieMap(profileManager.dumpCookiesForProfile(profileId))
 
-            val existing = if (existingAccountId != null) database.rewardsDao().getProfileById(existingAccountId) else null
+            if (cachedEmail.isNullOrBlank() || (cachedBalance?.availablePoints ?: 0) <= 0) {
+                val refreshedBalance = RewardsBalanceExtractor.extractPointsViaHttp(finalCookies)
+                if (refreshedBalance.isSuccess) {
+                    cachedBalance = refreshedBalance
+                    if (!refreshedBalance.email.isNullOrBlank()) {
+                        cachedEmail = refreshedBalance.email
+                    }
+                    if (!refreshedBalance.profileName.isNullOrBlank()) {
+                        cachedName = refreshedBalance.profileName
+                    }
+                }
+            }
+
+            val existingById = if (existingAccountId != null) database.rewardsDao().getProfileById(existingAccountId) else null
 
             val bal = cachedBalance
             val points = bal?.availablePoints ?: 0
@@ -281,16 +324,25 @@ class LoginDialog(
             val level = bal?.level ?: 1
 
             val emailCandidate = cachedEmail
-                ?: existing?.email?.takeIf { it.contains("@") && !it.contains("account_") }
+                ?: existingById?.email?.takeIf { it.contains("@") && !it.contains("account_") }
                 ?: "account_${profileId.take(6)}@outlook.com"
+
+            val existing = existingById ?: if (existingAccountId == null && emailCandidate.contains("@") && !emailCandidate.startsWith("account_")) {
+                database.rewardsDao().getAllActiveProfiles().firstOrNull {
+                    it.email.equals(emailCandidate, ignoreCase = true)
+                }
+            } else {
+                null
+            }
 
             val nameCandidate = cachedName
                 ?: existing?.profileName
                 ?: (if (emailCandidate.contains("@")) "Profile ${emailCandidate.substringBefore("@")}" else "Profile ${profileId.take(6)}")
 
             val targetAccount = if (existing != null) {
+                val mergedCookies = ProfileManager.mergeCookieSnapshots(existing.cookiesSnapshot, finalCookies)
                 existing.copy(
-                    cookiesSnapshot = finalCookies,
+                    cookiesSnapshot = mergedCookies,
                     email = if (emailCandidate.contains("@") && !emailCandidate.contains("account_")) emailCandidate else existing.email,
                     profileName = nameCandidate,
                     availablePoints = if (points > 0) points else existing.availablePoints,
@@ -299,7 +351,12 @@ class LoginDialog(
                     lifetimePoints = if (lifetime > 0) lifetime else existing.lifetimePoints,
                     streakCount = if (streak > 0) streak else existing.streakCount,
                     level = level,
-                    targetSearches = if (level == 1) 35 else 55
+                    targetSearches = if (level == 1) 35 else 55,
+                    dailySetDone = bal?.dailySetDone ?: existing.dailySetDone,
+                    dailySetProgress = if (bal?.dailySetDone == true) (bal.dailySetTotal.takeIf { it > 0 } ?: 3) else (bal?.dailySetProgress ?: existing.dailySetProgress),
+                    dailySetTotal = if ((bal?.dailySetTotal ?: 0) > 0) bal!!.dailySetTotal else existing.dailySetTotal,
+                    claimablePoints = bal?.claimablePoints ?: existing.claimablePoints,
+                    cookieExpired = false
                 )
             } else {
                 AccountProfile(
@@ -313,9 +370,24 @@ class LoginDialog(
                     lifetimePoints = lifetime,
                     streakCount = streak,
                     level = level,
-                    targetSearches = if (level == 1) 35 else 55
+                    targetSearches = if (level == 1) 35 else 55,
+                    dailySetDone = bal?.dailySetDone ?: false,
+                    dailySetProgress = if (bal?.dailySetDone == true) (bal.dailySetTotal.takeIf { it > 0 } ?: 3) else (bal?.dailySetProgress ?: 0),
+                    dailySetTotal = if ((bal?.dailySetTotal ?: 0) > 0) bal!!.dailySetTotal else 3,
+                    claimablePoints = bal?.claimablePoints ?: 0,
+                    cookieExpired = false
                 )
             }
+
+            // Chủ động thu hoạch sớm (Pre-fetch) DAPI Refresh/Access Token ngay khi phiên login.live.com còn mới 100%
+            try {
+                kotlinx.coroutines.withTimeoutOrNull(8000L) {
+                    val dapiToken = com.agy.rewardsnode.core.DapiAuthManager.ensureValidToken(targetAccount, webView, null)
+                    if (!dapiToken.isNullOrBlank()) {
+                        vlog.logPoints("Đã thu hoạch sẵn DAPI OAuth2 Token (90 ngày) khi lưu phiên", "Email=${targetAccount.email}", targetAccount.email)
+                    }
+                }
+            } catch (_: Throwable) {}
 
             vlog.logSystem("Đang lưu tài khoản vào SQLite Database...", "ID=${targetAccount.id}, Email=${targetAccount.email}, Points=${targetAccount.availablePoints}, Name=${targetAccount.profileName}")
             database.rewardsDao().insertOrUpdateProfile(targetAccount)
@@ -336,13 +408,19 @@ class LoginDialog(
     }
 
     override fun dismiss() {
+        ProfileManager.isInteractiveLoginActive = false
+        ProfileManager.interactiveLoginProfileId = null
         watchdogJob?.cancel()
         watchdogJob = null
         isAutoSyncing = false
         isSaving = false
         vlog.logSystem("Đóng LoginDialog", "ProfileId=$profileId")
-        scope.launch(AndroidMainDispatcher) {
-            profileManager.clearActiveSession(webView)
+        scope.launch(AndroidMainDispatcher + kotlinx.coroutines.NonCancellable) {
+            try {
+                profileManager.clearActiveSession(webView)
+            } finally {
+                scope.cancel()
+            }
         }
         webView.stopLoading()
         webView.loadUrl("about:blank")

@@ -5,6 +5,7 @@ import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.agy.rewardsnode.data.SecureColumnCrypto
 import com.agy.rewardsnode.data.model.AccountProfile
 import com.agy.rewardsnode.data.model.VlogEntry
 import kotlinx.coroutines.Dispatchers
@@ -61,8 +62,16 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 isEnabled INTEGER NOT NULL DEFAULT 1,
                 baselineDate TEXT NOT NULL DEFAULT '',
                 dailySetProgress INTEGER NOT NULL DEFAULT 0,
+                dailySetTotal INTEGER NOT NULL DEFAULT 3,
                 dailySetDone INTEGER NOT NULL DEFAULT 0,
-                claimablePoints INTEGER NOT NULL DEFAULT 0
+                claimablePoints INTEGER NOT NULL DEFAULT 0,
+                readProgress INTEGER NOT NULL DEFAULT 0,
+                readMax INTEGER NOT NULL DEFAULT 30,
+                puzzleProgress INTEGER NOT NULL DEFAULT 0,
+                cooldownUntilTimestamp INTEGER NOT NULL DEFAULT 0,
+                dapiAccessToken TEXT,
+                dapiRefreshToken TEXT,
+                dapiTokenExpiryTimestampMs INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -110,6 +119,22 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
             safeAddColumn(db, "account_profiles", "dailySetDone", "INTEGER NOT NULL DEFAULT 0")
             safeAddColumn(db, "account_profiles", "claimablePoints", "INTEGER NOT NULL DEFAULT 0")
         }
+        if (oldVersion < 6) {
+            safeAddColumn(db, "account_profiles", "dailySetTotal", "INTEGER NOT NULL DEFAULT 3")
+        }
+        if (oldVersion < 7) {
+            safeAddColumn(db, "account_profiles", "dapiAccessToken", "TEXT")
+            safeAddColumn(db, "account_profiles", "dapiRefreshToken", "TEXT")
+            safeAddColumn(db, "account_profiles", "dapiTokenExpiryTimestampMs", "INTEGER NOT NULL DEFAULT 0")
+        }
+        if (oldVersion < 8) {
+            safeAddColumn(db, "account_profiles", "readProgress", "INTEGER NOT NULL DEFAULT 0")
+            safeAddColumn(db, "account_profiles", "readMax", "INTEGER NOT NULL DEFAULT 30")
+        }
+        if (oldVersion < 9) {
+            safeAddColumn(db, "account_profiles", "puzzleProgress", "INTEGER NOT NULL DEFAULT 0")
+            safeAddColumn(db, "account_profiles", "cooldownUntilTimestamp", "INTEGER NOT NULL DEFAULT 0")
+        }
     }
 
     override fun onOpen(db: SQLiteDatabase) {
@@ -131,8 +156,16 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
         safeAddColumn(db, "account_profiles", "edgeMax", "INTEGER NOT NULL DEFAULT 0")
         safeAddColumn(db, "account_profiles", "baselineDate", "TEXT NOT NULL DEFAULT ''")
         safeAddColumn(db, "account_profiles", "dailySetProgress", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "dailySetTotal", "INTEGER NOT NULL DEFAULT 3")
         safeAddColumn(db, "account_profiles", "dailySetDone", "INTEGER NOT NULL DEFAULT 0")
         safeAddColumn(db, "account_profiles", "claimablePoints", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "readProgress", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "readMax", "INTEGER NOT NULL DEFAULT 30")
+        safeAddColumn(db, "account_profiles", "puzzleProgress", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "cooldownUntilTimestamp", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "dapiAccessToken", "TEXT")
+        safeAddColumn(db, "account_profiles", "dapiRefreshToken", "TEXT")
+        safeAddColumn(db, "account_profiles", "dapiTokenExpiryTimestampMs", "INTEGER NOT NULL DEFAULT 0")
     }
 
     private fun safeAddColumn(db: SQLiteDatabase, table: String, column: String, type: String) {
@@ -213,6 +246,11 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
             return if (idx >= 0 && !cursor.isNull(idx)) cursor.getString(idx) else null
         }
 
+        private fun getLongSafe(cursor: Cursor, columnName: String, defaultValue: Long = 0L): Long {
+            val idx = cursor.getColumnIndex(columnName)
+            return if (idx >= 0 && !cursor.isNull(idx)) cursor.getLong(idx) else defaultValue
+        }
+
         private fun parseAccountProfile(cursor: Cursor): AccountProfile {
             val totalPts = getIntSafe(cursor, "totalPoints", 0)
             val availPts = getIntSafe(cursor, "availablePoints", totalPts)
@@ -235,15 +273,23 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 mobileMax = getIntSafe(cursor, "mobileMax", 0),
                 edgeProgress = getIntSafe(cursor, "edgeProgress", 0),
                 edgeMax = getIntSafe(cursor, "edgeMax", 0),
-                proxyUrl = getStringSafe(cursor, "proxyUrl"),
+                proxyUrl = SecureColumnCrypto.decrypt(getStringSafe(cursor, "proxyUrl")),
                 customUserAgent = getStringSafe(cursor, "customUserAgent"),
-                cookiesSnapshot = getStringSafe(cursor, "cookiesSnapshot"),
+                cookiesSnapshot = SecureColumnCrypto.decrypt(getStringSafe(cursor, "cookiesSnapshot")),
                 lastActiveDate = getStringSafe(cursor, "lastActiveDate") ?: "",
                 isEnabled = getIntSafe(cursor, "isEnabled", 1) == 1,
                 baselineDate = getStringSafe(cursor, "baselineDate") ?: "",
                 dailySetProgress = getIntSafe(cursor, "dailySetProgress", 0),
+                dailySetTotal = getIntSafe(cursor, "dailySetTotal", 3),
                 dailySetDone = getIntSafe(cursor, "dailySetDone", 0) == 1,
-                claimablePoints = getIntSafe(cursor, "claimablePoints", 0)
+                claimablePoints = getIntSafe(cursor, "claimablePoints", 0),
+                readProgress = getIntSafe(cursor, "readProgress", 0),
+                readMax = getIntSafe(cursor, "readMax", 30),
+                puzzleProgress = getIntSafe(cursor, "puzzleProgress", 0),
+                cooldownUntilTimestamp = getLongSafe(cursor, "cooldownUntilTimestamp", 0L),
+                dapiAccessToken = SecureColumnCrypto.decrypt(getStringSafe(cursor, "dapiAccessToken")),
+                dapiRefreshToken = SecureColumnCrypto.decrypt(getStringSafe(cursor, "dapiRefreshToken")),
+                dapiTokenExpiryTimestampMs = getLongSafe(cursor, "dapiTokenExpiryTimestampMs", 0L)
             )
         }
 
@@ -263,6 +309,17 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
             list
         }
 
+        override suspend fun getAllProfiles(): List<AccountProfile> = withContext(Dispatchers.IO) {
+            val list = mutableListOf<AccountProfile>()
+            val db = readableDatabase
+            db.rawQuery("SELECT * FROM account_profiles ORDER BY isEnabled DESC, email ASC", null).use { cursor ->
+                while (cursor.moveToNext()) {
+                    list.add(parseAccountProfile(cursor))
+                }
+            }
+            list
+        }
+
         override suspend fun getProfileById(id: String): AccountProfile? = withContext(Dispatchers.IO) {
             val db = readableDatabase
             db.rawQuery("SELECT * FROM account_profiles WHERE id = ? LIMIT 1", arrayOf(id)).use { cursor ->
@@ -272,9 +329,8 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
             }
         }
 
-        override suspend fun insertOrUpdateProfile(profile: AccountProfile) = withContext(Dispatchers.IO) {
-            val db = writableDatabase
-            val values = ContentValues().apply {
+        private fun buildProfileContentValues(profile: AccountProfile): ContentValues {
+            return ContentValues().apply {
                 put("id", profile.id)
                 put("email", profile.email)
                 put("profileName", profile.profileName)
@@ -293,17 +349,46 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 put("mobileMax", profile.mobileMax)
                 put("edgeProgress", profile.edgeProgress)
                 put("edgeMax", profile.edgeMax)
-                put("proxyUrl", profile.proxyUrl)
+                put("proxyUrl", SecureColumnCrypto.encrypt(profile.proxyUrl))
                 put("customUserAgent", profile.customUserAgent)
-                put("cookiesSnapshot", profile.cookiesSnapshot)
+                put("cookiesSnapshot", SecureColumnCrypto.encrypt(profile.cookiesSnapshot))
                 put("lastActiveDate", profile.lastActiveDate)
                 put("isEnabled", if (profile.isEnabled) 1 else 0)
                 put("baselineDate", profile.baselineDate)
                 put("dailySetProgress", profile.dailySetProgress)
+                put("dailySetTotal", profile.dailySetTotal)
                 put("dailySetDone", if (profile.dailySetDone) 1 else 0)
                 put("claimablePoints", profile.claimablePoints)
+                put("readProgress", profile.readProgress)
+                put("readMax", profile.readMax)
+                put("puzzleProgress", profile.puzzleProgress)
+                put("cooldownUntilTimestamp", profile.cooldownUntilTimestamp)
+                put("dapiAccessToken", SecureColumnCrypto.encrypt(profile.dapiAccessToken))
+                put("dapiRefreshToken", SecureColumnCrypto.encrypt(profile.dapiRefreshToken))
+                put("dapiTokenExpiryTimestampMs", profile.dapiTokenExpiryTimestampMs)
             }
+        }
+
+        override suspend fun insertOrUpdateProfile(profile: AccountProfile) = withContext(Dispatchers.IO) {
+            val db = writableDatabase
+            val values = buildProfileContentValues(profile)
             db.insertWithOnConflict("account_profiles", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+            refreshProfilesFlow()
+        }
+
+        override suspend fun insertOrUpdateProfilesBatch(profiles: List<AccountProfile>) = withContext(Dispatchers.IO) {
+            if (profiles.isEmpty()) return@withContext
+            val db = writableDatabase
+            db.beginTransaction()
+            try {
+                for (profile in profiles) {
+                    val values = buildProfileContentValues(profile)
+                    db.insertWithOnConflict("account_profiles", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+                }
+                db.setTransactionSuccessful()
+            } finally {
+                db.endTransaction()
+            }
             refreshProfilesFlow()
         }
 
@@ -327,6 +412,7 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                     pcProgress = 0,
                     mobileProgress = 0,
                     edgeProgress = 0,
+                    readProgress = 0,
                     dailySetProgress = 0,
                     dailySetDone = 0,
                     baselinePointsToday = CASE WHEN availablePoints > 0 THEN availablePoints ELSE totalPoints END 
@@ -392,6 +478,36 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
         override fun getRecentVlogsFlow(limit: Int): Flow<List<VlogEntry>> {
             _vlogsFlow.value = queryRecentVlogs(limit)
             return _vlogsFlow.asStateFlow()
+        }
+
+        override suspend fun getRecentVlogs(limit: Int): List<VlogEntry> = withContext(Dispatchers.IO) {
+            queryRecentVlogs(limit)
+        }
+
+        override suspend fun getPointHistoryVlogs(limit: Int): List<VlogEntry> = withContext(Dispatchers.IO) {
+            val list = mutableListOf<VlogEntry>()
+            val db = readableDatabase
+            db.rawQuery(
+                """
+                SELECT * FROM vlog_entries 
+                WHERE tag = 'POINT' 
+                   OR message LIKE '%+%pts%' 
+                   OR message LIKE '%+%đ%' 
+                   OR message LIKE '%[POINT]%' 
+                   OR message LIKE '%[DAPI]%' 
+                   OR message LIKE '%[TASK]%' 
+                   OR message LIKE '%[KEEP-EARNING]%' 
+                   OR message LIKE '%[READY-TO-CLAIM]%'
+                ORDER BY timestamp DESC 
+                LIMIT ?
+                """.trimIndent(),
+                arrayOf(limit.toString())
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    list.add(parseVlogEntry(cursor))
+                }
+            }
+            list
         }
 
         override fun getVlogsByTagFlow(tag: String, limit: Int): Flow<List<VlogEntry>> {
@@ -477,7 +593,7 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
 
     companion object {
         private const val DATABASE_NAME = "rewards_node_database.db"
-        private const val DATABASE_VERSION = 5
+        private const val DATABASE_VERSION = 8
 
         @Volatile
         private var INSTANCE: AppDatabase? = null

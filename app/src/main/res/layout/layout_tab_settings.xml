@@ -20,7 +20,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Cài Đặt"
+            android:text="Cài Đặt Hệ Thống"
             android:textColor="#F8FAFC"
             android:textSize="20sp"
             android:textStyle="bold" />
@@ -61,9 +61,11 @@
                 android:orientation="vertical"
                 android:paddingHorizontal="16dp"
                 android:paddingTop="14dp"
-                android:paddingBottom="20dp">
+                android:paddingBottom="70dp">
 
-                <!-- Card 1: Cooldown Settings -->
+                <!-- ===================================================== -->
+                <!-- Card 1: ⏱️ Điều Nhịp & Độ Trễ Tìm Kiếm               -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -75,7 +77,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Điều Nhịp Cooldown (Phút)"
+                        android:text="⏱️ Điều Nhịp &amp; Độ Trễ Tìm Kiếm"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
@@ -84,86 +86,270 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
-                        android:text="Nghỉ ngẫu nhiên giữa các batch tìm kiếm"
+                        android:text="Thiết lập nhịp nghỉ ngẫu nhiên giữa các lô và độ trễ từng từ khóa"
                         android:textColor="#64748B"
                         android:textSize="12sp" />
 
-                    <!-- Min & Max Cooldown Row -->
+                    <!-- Row 1: etCooldownMin -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center_vertical"
                         android:orientation="horizontal">
 
-                        <!-- Cooldown Min -->
                         <LinearLayout
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:layout_marginEnd="6dp"
+                            android:layout_marginEnd="12dp"
                             android:layout_weight="1"
                             android:orientation="vertical">
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="Tối thiểu (Min):"
-                                android:textColor="#94A3B8"
-                                android:textSize="11sp"
+                                android:text="Nghỉ Cooldown tối thiểu (Phút)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
                                 android:textStyle="bold" />
 
-                            <EditText
-                                android:id="@+id/etCooldownMin"
-                                android:layout_width="match_parent"
-                                android:layout_height="42dp"
-                                android:layout_marginTop="4dp"
-                                android:background="@drawable/bg_pill_dark"
-                                android:hint="15"
-                                android:inputType="number"
-                                android:paddingHorizontal="12dp"
-                                android:text="15"
-                                android:textColor="#F8FAFC"
-                                android:textColorHint="#64748B"
-                                android:textSize="13sp" />
-
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Thời gian ngủ tối thiểu giữa hai batch tìm kiếm"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
                         </LinearLayout>
 
-                        <!-- Cooldown Max -->
+                        <EditText
+                            android:id="@+id/etCooldownMin"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="15"
+                            android:inputType="number"
+                            android:text="15"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 2: etCooldownMax -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
                         <LinearLayout
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
-                            android:layout_marginStart="6dp"
+                            android:layout_marginEnd="12dp"
                             android:layout_weight="1"
                             android:orientation="vertical">
 
                             <TextView
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="Tối đa (Max):"
-                                android:textColor="#94A3B8"
-                                android:textSize="11sp"
+                                android:text="Nghỉ Cooldown tối đa (Phút)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
                                 android:textStyle="bold" />
 
-                            <EditText
-                                android:id="@+id/etCooldownMax"
-                                android:layout_width="match_parent"
-                                android:layout_height="42dp"
-                                android:layout_marginTop="4dp"
-                                android:background="@drawable/bg_pill_dark"
-                                android:hint="22"
-                                android:inputType="number"
-                                android:paddingHorizontal="12dp"
-                                android:text="22"
-                                android:textColor="#F8FAFC"
-                                android:textColorHint="#64748B"
-                                android:textSize="13sp" />
-
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Biên độ ngẫu nhiên tối đa giúp mô phỏng người dùng thật"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
                         </LinearLayout>
 
+                        <EditText
+                            android:id="@+id/etCooldownMax"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="22"
+                            android:inputType="number"
+                            android:text="22"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 3: etSearchDelayMin -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Độ trễ tìm kiếm tối thiểu (Giây)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Khoảng dừng tối thiểu giữa 2 từ khóa liên tiếp (5–180s)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etSearchDelayMin"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="18"
+                            android:inputType="number"
+                            android:text="18"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 4: etSearchDelayMax -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Độ trễ tìm kiếm tối đa (Giây)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Khoảng dừng tối đa giữa 2 từ khóa liên tiếp (10–300s)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etSearchDelayMax"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="45"
+                            android:inputType="number"
+                            android:text="45"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 5: etBatchSize -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Kích thước mỗi Batch (Lượt)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số lượt tìm kiếm thực hiện liên tiếp trước khi nghỉ Cooldown"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etBatchSize"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="4"
+                            android:inputType="number"
+                            android:text="4"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
                     </LinearLayout>
 
                 </LinearLayout>
 
-                <!-- Card 2: Target Searches Settings -->
+                <!-- ===================================================== -->
+                <!-- Card 2: ⏰ Tự Động Hóa & Lập Lịch 24/7                -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -175,31 +361,305 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Hạn Mức Tìm Kiếm"
+                        android:text="⏰ Tự Động Hóa &amp; Lập Lịch 24/7"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
 
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Tự thức dậy theo các khung giờ được bật và tự tắt khi hoàn tất"
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <!-- Master Auto Daily Schedule Switch -->
+                    <Switch
+                        android:id="@+id/swAutoDailySchedule"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:checked="true"
+                        android:text="Bật hẹn giờ tự động chạy hàng ngày"
+                        android:textColor="#F8FAFC"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Bật/tắt độc lập từng khung giờ (HH:mm) để đặt lịch đánh thức Node."
+                        android:textColor="#64748B"
+                        android:textSize="11sp" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Slot 1 Row -->
                     <LinearLayout
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:layout_marginTop="10dp"
                         android:gravity="center_vertical"
                         android:orientation="horizontal">
 
-                        <TextView
+                        <LinearLayout
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
+                            android:layout_marginEnd="10dp"
                             android:layout_weight="1"
-                            android:text="Mục tiêu ngày:"
-                            android:textColor="#94A3B8"
-                            android:textSize="12sp"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Khung giờ 1 (Sáng)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Chu kỳ tự động khởi chạy đầu ngày"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etScheduleSlot1"
+                            android:layout_width="86dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="05:00"
+                            android:inputType="time"
+                            android:text="05:00"
+                            android:textColor="#10B981"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
                             android:textStyle="bold" />
+
+                        <Switch
+                            android:id="@+id/swScheduleSlot1"
+                            android:layout_width="wrap_content"
+                            android:layout_height="38dp"
+                            android:layout_marginStart="8dp"
+                            android:checked="true" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Slot 2 Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="10dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Khung giờ 2 (Trưa)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Quét kiểm tra bổ sung giữa ngày"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etScheduleSlot2"
+                            android:layout_width="86dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="12:30"
+                            android:inputType="time"
+                            android:text="12:30"
+                            android:textColor="#38BDF8"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <Switch
+                            android:id="@+id/swScheduleSlot2"
+                            android:layout_width="wrap_content"
+                            android:layout_height="38dp"
+                            android:layout_marginStart="8dp"
+                            android:checked="false" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Slot 3 Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="10dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Khung giờ 3 (Tối)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Vét điểm lần cuối cho tài khoản còn thiếu"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etScheduleSlot3"
+                            android:layout_width="86dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="20:00"
+                            android:inputType="time"
+                            android:text="20:00"
+                            android:textColor="#A855F7"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+
+                        <Switch
+                            android:id="@+id/swScheduleSlot3"
+                            android:layout_width="wrap_content"
+                            android:layout_height="38dp"
+                            android:layout_marginStart="8dp"
+                            android:checked="false" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Auto Stop When All Completed Switch -->
+                    <Switch
+                        android:id="@+id/swAutoStopCompleted"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="🛑 Tự dừng Node khi hoàn thành hết điểm"
+                        android:textColor="#F8FAFC"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Tự tắt Service, giải phóng 100% RAM &amp; CPU khi các tài khoản đạt tối đa điểm."
+                        android:textColor="#64748B"
+                        android:textSize="11sp" />
+
+                </LinearLayout>
+
+                <!-- ===================================================== -->
+                <!-- Card 3: 🎯 Hạn Mức Tìm Kiếm Mặc Định                  -->
+                <!-- ===================================================== -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginBottom="12dp"
+                    android:background="@drawable/bg_profile_card_dark"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🎯 Hạn Mức Tìm Kiếm Mặc Định"
+                        android:textColor="#F8FAFC"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Số lượt tìm kiếm mục tiêu mỗi ngày cho từng tài khoản"
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Mục tiêu tìm kiếm ngày (Lượt)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Khuyến nghị 30–35 lượt để đạt tối đa điểm Mobile + PC"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
 
                         <EditText
                             android:id="@+id/etDefaultTargetSearches"
-                            android:layout_width="80dp"
-                            android:layout_height="40dp"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
                             android:background="@drawable/bg_pill_dark"
                             android:gravity="center"
                             android:hint="35"
@@ -207,7 +667,8 @@
                             android:text="35"
                             android:textColor="#F8FAFC"
                             android:textColorHint="#64748B"
-                            android:textSize="13sp" />
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
 
                     </LinearLayout>
 
@@ -305,13 +766,15 @@
                         android:layout_width="match_parent"
                         android:layout_height="44dp"
                         android:layout_marginTop="8dp"
-                        android:text="Áp dụng cho tất cả tài khoản"
+                        android:text="Áp dụng đồng loạt cho tất cả tài khoản hiện có"
                         android:textColor="#F8FAFC"
                         android:textSize="13sp" />
 
                 </LinearLayout>
 
-                <!-- Card 3: Global Proxy -->
+                <!-- ===================================================== -->
+                <!-- Card 4: 🔁 Giới Hạn Thử Lại & Ngưỡng Bảo Vệ           -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -323,7 +786,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Proxy Toàn Cục"
+                        android:text="🔁 Giới Hạn Thử Lại &amp; Ngưỡng Bảo Vệ"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
@@ -332,26 +795,322 @@
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
                         android:layout_marginTop="2dp"
-                        android:text="Dự phòng cho profile không có proxy riêng"
+                        android:text="Kiểm soát số lần thử lại và cơ chế tự ngắt khi bị giới hạn điểm"
                         android:textColor="#64748B"
                         android:textSize="12sp" />
 
-                    <EditText
-                        android:id="@+id/etGlobalProxy"
+                    <!-- Row 1: etMaxClaimRetries -->
+                    <LinearLayout
                         android:layout_width="match_parent"
-                        android:layout_height="42dp"
-                        android:layout_marginTop="8dp"
-                        android:background="@drawable/bg_pill_dark"
-                        android:hint="socks5://user:pass@host:port"
-                        android:inputType="textUri"
-                        android:paddingHorizontal="12dp"
-                        android:textColor="#F8FAFC"
-                        android:textColorHint="#64748B"
-                        android:textSize="13sp" />
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="14dp"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Số lần thử lại Claim DOM"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số lần quét và click lại nhiệm vụ Daily Set &amp; Activities (1–5)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etMaxClaimRetries"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="2"
+                            android:inputType="number"
+                            android:text="2"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 2: etDapiMaxRetries -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Số lần thử lại DAPI nền"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Giới hạn gọi API báo cáo hoạt động trực tiếp mỗi ngày (1–5)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etDapiMaxRetries"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="2"
+                            android:inputType="number"
+                            android:text="2"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 3: etMaxReconciliationPasses -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Số vòng cày bù (Reconciliation)"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số chu kỳ kiểm tra và chạy bù khi điểm thực tế chưa đủ (0–5)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etMaxReconciliationPasses"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="2"
+                            android:inputType="number"
+                            android:text="2"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 4: etCooldownTriggerBatches -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Ngưỡng Batch Δ=0 kích hoạt Cooldown"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số batch liên tiếp không lên điểm trước khi ép nghỉ Cooldown (1–5)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etCooldownTriggerBatches"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="2"
+                            android:inputType="number"
+                            android:text="2"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 5: etFrozenStopBatches -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Ngưỡng Batch Δ=0 tạm dừng trong ngày"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số batch liên tiếp không cộng điểm trước khi khóa tìm kiếm hôm nay (2–8)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etFrozenStopBatches"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="3"
+                            android:inputType="number"
+                            android:text="3"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="10dp"
+                        android:background="#1E293B" />
+
+                    <!-- Row 6: etProxyCircuitThreshold -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:gravity="center_vertical"
+                        android:orientation="horizontal">
+
+                        <LinearLayout
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_marginEnd="12dp"
+                            android:layout_weight="1"
+                            android:orientation="vertical">
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:text="Ngưỡng lỗi ngắt mạch Proxy"
+                                android:textColor="#F8FAFC"
+                                android:textSize="13sp"
+                                android:textStyle="bold" />
+
+                            <TextView
+                                android:layout_width="wrap_content"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="2dp"
+                                android:text="Số lần lỗi mạng liên tiếp trước khi ngắt kết nối tài khoản (1–10)"
+                                android:textColor="#64748B"
+                                android:textSize="11sp" />
+                        </LinearLayout>
+
+                        <EditText
+                            android:id="@+id/etProxyCircuitThreshold"
+                            android:layout_width="76dp"
+                            android:layout_height="38dp"
+                            android:background="@drawable/bg_pill_dark"
+                            android:gravity="center"
+                            android:hint="3"
+                            android:inputType="number"
+                            android:text="3"
+                            android:textColor="#F8FAFC"
+                            android:textColorHint="#64748B"
+                            android:textSize="13sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
 
                 </LinearLayout>
 
-                <!-- Card 4: User-Agent Customization -->
+                <!-- ===================================================== -->
+                <!-- Card 5: 🌐 Mạng & Định Danh                           -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -363,16 +1122,76 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="User-Agent Di Động"
+                        android:text="🌐 Mạng &amp; Định Danh"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Proxy toàn cục và chuỗi định danh trình duyệt mặc định"
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="12dp"
+                        android:text="Proxy Toàn Cục (Dự phòng)"
+                        android:textColor="#F8FAFC"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Sử dụng cho các tài khoản không cấu hình proxy riêng"
+                        android:textColor="#64748B"
+                        android:textSize="11sp" />
+
+                    <EditText
+                        android:id="@+id/etGlobalProxy"
+                        android:layout_width="match_parent"
+                        android:layout_height="42dp"
+                        android:layout_marginTop="6dp"
+                        android:background="@drawable/bg_pill_dark"
+                        android:hint="socks5://user:pass@host:port"
+                        android:inputType="textUri"
+                        android:paddingHorizontal="12dp"
+                        android:textColor="#F8FAFC"
+                        android:textColorHint="#64748B"
+                        android:textSize="13sp" />
+
+                    <View
+                        android:layout_width="match_parent"
+                        android:layout_height="1dp"
+                        android:layout_marginVertical="12dp"
+                        android:background="#1E293B" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="User-Agent Di Động Tùy Chỉnh"
+                        android:textColor="#F8FAFC"
+                        android:textSize="13sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Để trống để sử dụng bộ sinh Fingerprint tự động theo từng tài khoản"
+                        android:textColor="#64748B"
+                        android:textSize="11sp" />
 
                     <EditText
                         android:id="@+id/etUserAgent"
                         android:layout_width="match_parent"
                         android:layout_height="42dp"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="6dp"
                         android:background="@drawable/bg_pill_dark"
                         android:hint="Mozilla/5.0 (Linux; Android 14)..."
                         android:inputType="text"
@@ -383,7 +1202,9 @@
 
                 </LinearLayout>
 
-                <!-- Card 5: Telegram Bot Notifications -->
+                <!-- ===================================================== -->
+                <!-- Card 6: 🔔 Thông Báo Telegram                         -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -393,9 +1214,10 @@
                     android:padding="16dp">
 
                     <TextView
+                        android:id="@+id/tvTelegramHeader"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Thông Báo Telegram"
+                        android:text="🔔 Thông Báo Telegram"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
@@ -407,6 +1229,15 @@
                         android:text="Báo cáo tiến độ và cảnh báo Captcha tức thời"
                         android:textColor="#64748B"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/tvTelegramBotHint"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="Mẫu: @BotFather • Nhập Bot Token &amp; Chat ID của bạn"
+                        android:textColor="#38BDF8"
+                        android:textSize="11sp" />
 
                     <EditText
                         android:id="@+id/etTelegramBotToken"
@@ -434,25 +1265,51 @@
                         android:textColorHint="#64748B"
                         android:textSize="13sp" />
 
-                    <!-- Test Telegram Button -->
-                    <Button
-                        android:id="@+id/btnTestTelegram"
-                        android:layout_width="wrap_content"
-                        android:layout_height="32dp"
+                    <!-- Telegram Action Buttons -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
                         android:layout_marginTop="8dp"
-                        android:background="@drawable/bg_pill_all"
-                        android:minWidth="0dp"
-                        android:minHeight="0dp"
-                        android:paddingHorizontal="14dp"
-                        android:stateListAnimator="@null"
-                        android:text="Gửi tin thử nghiệm"
-                        android:textColor="@color/edge_blue"
-                        android:textSize="11sp"
-                        android:textStyle="bold" />
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnTestTelegram"
+                            android:layout_width="0dp"
+                            android:layout_height="32dp"
+                            android:layout_weight="1"
+                            android:layout_marginEnd="4dp"
+                            android:background="@drawable/bg_pill_all"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"
+                            android:paddingHorizontal="8dp"
+                            android:stateListAnimator="@null"
+                            android:text="Gửi tin thử"
+                            android:textColor="@color/edge_blue"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+
+                        <Button
+                            android:id="@+id/btnResetTelegramDefault"
+                            android:layout_width="0dp"
+                            android:layout_height="32dp"
+                            android:layout_weight="1"
+                            android:layout_marginStart="4dp"
+                            android:background="@drawable/bg_pill_srch"
+                            android:minWidth="0dp"
+                            android:minHeight="0dp"
+                            android:paddingHorizontal="8dp"
+                            android:stateListAnimator="@null"
+                            android:text="Điền mẫu mặc định"
+                            android:textColor="@color/pill_srch"
+                            android:textSize="11sp"
+                            android:textStyle="bold" />
+                    </LinearLayout>
 
                 </LinearLayout>
 
-                <!-- Card 6: Dark Mode & Device Health -->
+                <!-- ===================================================== -->
+                <!-- Card 7: 🛡️ Giao Diện & Bảo Vệ Thiết Bị               -->
+                <!-- ===================================================== -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -464,7 +1321,7 @@
                     <TextView
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Giao Diện &amp; Bảo Vệ Thiết Bị"
+                        android:text="🛡️ Giao Diện &amp; Bảo Vệ Thiết Bị"
                         android:textColor="#F8FAFC"
                         android:textSize="15sp"
                         android:textStyle="bold" />
@@ -517,6 +1374,111 @@
 
                 </LinearLayout>
 
+                <!-- ===================================================== -->
+                <!-- Card 8: 🧰 Bảo Trì & Sao Lưu Vault                    -->
+                <!-- ===================================================== -->
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginBottom="16dp"
+                    android:background="@drawable/bg_profile_card_dark"
+                    android:orientation="vertical"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="14dp">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="🧰 Bảo Trì &amp; Sao Lưu Vault"
+                        android:textColor="#F8FAFC"
+                        android:textSize="15sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="2dp"
+                        android:text="Công cụ tự sửa chữa, kiểm tra sức khỏe và sao lưu mã hóa"
+                        android:textColor="#64748B"
+                        android:textSize="12sp" />
+
+                    <!-- 1-Tap Emergency Reset -->
+                    <Button
+                        android:id="@+id/btnEmergencyReset"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="12dp"
+                        android:background="@drawable/bg_btn_danger"
+                        android:stateListAnimator="@null"
+                        android:text="⚡ Khôi Phục Khẩn Cấp (1-Tap Reset)"
+                        android:textColor="#EF4444"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <!-- Health Check Button -->
+                    <Button
+                        android:id="@+id/btnHealthCheck"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_btn_accent"
+                        android:stateListAnimator="@null"
+                        android:text="🩺 Kiểm Tra Sức Khỏe (Health Check 5 Hạng Mục)"
+                        android:textColor="#38BDF8"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <!-- Backup & Restore Buttons Row -->
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:orientation="horizontal">
+
+                        <Button
+                            android:id="@+id/btnVaultBackup"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginEnd="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_quick_action"
+                            android:stateListAnimator="@null"
+                            android:text="🛡️ Sao Lưu (.rbkp)"
+                            android:textColor="#F8FAFC"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                        <Button
+                            android:id="@+id/btnVaultRestore"
+                            android:layout_width="0dp"
+                            android:layout_height="44dp"
+                            android:layout_marginStart="4dp"
+                            android:layout_weight="1"
+                            android:background="@drawable/bg_btn_quick_action"
+                            android:stateListAnimator="@null"
+                            android:text="📥 Phục Hồi (.rbkp)"
+                            android:textColor="#F8FAFC"
+                            android:textSize="12sp"
+                            android:textStyle="bold" />
+
+                    </LinearLayout>
+
+                    <!-- Forensic Shredder & Vacuum -->
+                    <Button
+                        android:id="@+id/btnForensicShred"
+                        android:layout_width="match_parent"
+                        android:layout_height="44dp"
+                        android:layout_marginTop="8dp"
+                        android:background="@drawable/bg_btn_quick_action"
+                        android:stateListAnimator="@null"
+                        android:text="🧹 Dọn Dẹp &amp; Zero-Fill Shred Logs &gt; 7 Ngày"
+                        android:textColor="#94A3B8"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                </LinearLayout>
+
             </LinearLayout>
 
         </ScrollView>
@@ -530,7 +1492,7 @@
             android:elevation="8dp"
             android:paddingHorizontal="16dp"
             android:paddingTop="10dp"
-            android:paddingBottom="76dp">
+            android:paddingBottom="12dp">
 
             <Button
                 android:id="@+id/btnSaveSettings"

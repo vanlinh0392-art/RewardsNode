@@ -12,6 +12,7 @@ class RewardsActivitiesEngineTest {
         val scripts = listOf(
             RewardsActivitiesEngine.createReadyToClaimScript(),
             RewardsActivitiesEngine.createDailySetExtractorScript(),
+            RewardsActivitiesEngine.createCardClickScript("token_test", "Global_DailySet_1"),
             RewardsActivitiesEngine.createPollSolverScript(),
             RewardsActivitiesEngine.createQuizSolverScript(),
             RewardsActivitiesEngine.createStreakProtectionScript()
@@ -107,5 +108,106 @@ class RewardsActivitiesEngineTest {
         assertEquals("https://example.com", task.destinationUrl)
         assertEquals("poll", task.taskType)
         assertFalse(task.isCompleted)
+    }
+
+    @Test
+    fun testCreateCardClickScript() {
+        val script = RewardsActivitiesEngine.createCardClickScript("test_q", "offer_123")
+        assertTrue(script.isNotBlank())
+        assertTrue(script.trim().startsWith("(function()"))
+        assertTrue(script.trim().endsWith(")();"))
+        assertTrue(script.contains("PointerEvent"))
+        assertTrue(script.contains("targetAnchor.setAttribute('target', '_self')") || script.contains("targetAnchor.target = '_self'"))
+        assertTrue(script.contains("test_q"))
+        assertTrue(script.contains("offer_123"))
+    }
+
+    @Test
+    fun testParseDynamicDailyTasksCountMoreThan3() {
+        val rawJson = """
+            [
+                {"id":"task1","title":"Task 1","pointValue":10,"destinationUrl":"https://bing.com/1","taskType":"quiz","isCompleted":true},
+                {"id":"task2","title":"Task 2","pointValue":10,"destinationUrl":"https://bing.com/2","taskType":"poll","isCompleted":true},
+                {"id":"task3","title":"Task 3","pointValue":10,"destinationUrl":"https://bing.com/3","taskType":"urlreward","isCompleted":false},
+                {"id":"task4","title":"Task 4","pointValue":10,"destinationUrl":"https://bing.com/4","taskType":"urlreward","isCompleted":false},
+                {"id":"task5","title":"Task 5","pointValue":10,"destinationUrl":"https://bing.com/5","taskType":"urlreward","isCompleted":false}
+            ]
+        """.trimIndent()
+
+        val tasks = RewardsActivitiesEngine.parseDailyTasks(rawJson)
+        assertEquals("Must parse all 5 tasks without hardcoded limit of 3", 5, tasks.size)
+        assertEquals("task1", tasks[0].id)
+        assertEquals("task5", tasks[4].id)
+        assertEquals(2, tasks.count { it.isCompleted })
+        assertEquals(3, tasks.count { !it.isCompleted })
+    }
+
+    @Test
+    fun testParseDailyTasksFromNextDataJsonObject() {
+        val nextDataJson = """
+            {
+                "props": {
+                    "pageProps": {
+                        "dailySetPromotions": {
+                            "10/22/2026": [
+                                {
+                                    "offerId": "ds_1",
+                                    "title": "Daily Set Quiz",
+                                    "pointProgressMax": 10,
+                                    "pointProgress": 10,
+                                    "destinationUrl": "https://www.bing.com/quiz",
+                                    "complete": true
+                                },
+                                {
+                                    "offerId": "ds_2",
+                                    "title": "Daily Set Poll",
+                                    "pointProgressMax": 10,
+                                    "pointProgress": 0,
+                                    "destinationUrl": "https://www.bing.com/poll",
+                                    "complete": false
+                                }
+                            ]
+                        },
+                        "morePromotions": [
+                            {
+                                "offerId": "more_1",
+                                "title": "Explore Paris",
+                                "pointProgressMax": 5,
+                                "pointProgress": 0,
+                                "destinationUrl": "https://www.bing.com/paris",
+                                "complete": false
+                            }
+                        ]
+                    }
+                }
+            }
+        """.trimIndent()
+
+        val tasks = RewardsActivitiesEngine.parseDailyTasks(nextDataJson)
+        assertEquals(3, tasks.size)
+        assertEquals("ds_1", tasks[0].id)
+        assertEquals("Daily Set Quiz", tasks[0].title)
+        assertEquals("quiz", tasks[0].taskType)
+        assertTrue(tasks[0].isCompleted)
+
+        assertEquals("ds_2", tasks[1].id)
+        assertEquals("poll", tasks[1].taskType)
+        assertFalse(tasks[1].isCompleted)
+
+        assertEquals("more_1", tasks[2].id)
+        assertEquals("urlreward", tasks[2].taskType)
+        assertFalse(tasks[2].isCompleted)
+    }
+
+    @Test
+    fun testParseDailyTasksFromJsonWithEscapedQuotes() {
+        val nextDataJson = "{\"props\":{\"pageProps\":{\"dailySetPromotions\":{\"20261022\":[{\"offerId\":\"esc_1\",\"title\":\"Escaped Task\",\"pointProgressMax\":10,\"complete\":false,\"destinationUrl\":\"https://bing.com\"}]}}}}"
+        val escaped = "\"${nextDataJson.replace("\"", "\\\"")}\""
+
+        val tasks = RewardsActivitiesEngine.parseDailyTasks(escaped)
+        assertEquals(1, tasks.size)
+        assertEquals("esc_1", tasks[0].id)
+        assertEquals("Escaped Task", tasks[0].title)
+        assertFalse(tasks[0].isCompleted)
     }
 }

@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_marginBottom="6dp"
+    android:background="@drawable/bg_pill_dark"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingHorizontal="10dp"
+    android:paddingVertical="8dp">
+
+    <!-- Type Badge (QUIZ, POLL, URL, PROMO, NEWS) -->
+    <TextView
+        android:id="@+id/tvTaskTypeBadge"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_badge_search"
+        android:paddingHorizontal="6dp"
+        android:paddingVertical="2dp"
+        android:text="TASK"
+        android:textColor="#38BDF8"
+        android:textSize="10sp"
+        android:textStyle="bold" />
+
+    <!-- Center: Title & Subtitle -->
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="8dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvTaskTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:text="Nhiệm vụ Microsoft Rewards"
+            android:textColor="#F8FAFC"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvTaskSub"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Tự động hóa hoàn thành"
+            android:textColor="#94A3B8"
+            android:textSize="10sp" />
+
+    </LinearLayout>
+
+    <!-- Right: Points & Status Badge -->
+    <LinearLayout
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/tvTaskPoints"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="+10đ"
+            android:textColor="#F59E0B"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tvTaskStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="1dp"
+            android:text="Chưa làm"
+            android:textColor="#64748B"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+    </LinearLayout>
+
+</LinearLayout>

@@ -3,11 +3,15 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="com.agy.rewardsnode">
 
+    <uses-sdk
+        android:minSdkVersion="26"
+        android:targetSdkVersion="34" />
+
     <!-- Network permissions -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Background runtime & WakeLock -->
+    <!-- Background runtime & WakeLock & Alarms -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
@@ -15,36 +19,40 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
 
     <application
         android:name=".App"
         android:allowBackup="false"
-        android:icon="@android:drawable/sym_def_app_icon"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@android:drawable/sym_def_app_icon"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.RewardsNode"
         android:usesCleartextTraffic="false"
         android:hardwareAccelerated="true"
+        android:resizeableActivity="true"
         android:debuggable="true">
+
+        <!-- Hỗ trợ tỉ lệ màn hình dài 20:9 (1200x2670) của Xiaomi Mi 14, triệt tiêu hoàn toàn Letterbox và scaleFactor 0.8 -->
+        <meta-data android:name="android.max_aspect" android:value="2.5" />
+        <meta-data android:name="notch.config" android:value="portrait|landscape" />
 
         <!-- Main Dashboard Activity -->
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:resizeableActivity="true"
+            android:maxAspectRatio="2.5"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|fontScale"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- Settings Activity -->
-        <activity
-            android:name=".ui.SettingsActivity"
-            android:exported="false"
-            android:label="@string/title_settings"
-            android:parentActivityName=".ui.MainActivity" />
 
         <!-- Foreground Service for Background Automation Node -->
         <service
@@ -60,10 +68,20 @@
         <receiver
             android:name=".service.BootReceiver"
             android:enabled="true"
-            android:exported="false">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Cooldown Deep Sleep Alarm Receiver -->
+        <receiver
+            android:name=".service.CooldownAlarmReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.agy.rewardsnode.ACTION_COOLDOWN_WAKEUP" />
             </intent-filter>
         </receiver>
 

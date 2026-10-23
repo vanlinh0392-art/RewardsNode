@@ -15,6 +15,7 @@ import android.os.Looper
 import android.webkit.*
 import com.agy.rewardsnode.App
 import com.agy.rewardsnode.core.AutomationEngine
+import com.agy.rewardsnode.core.DataSaverWebViewClient
 import com.agy.rewardsnode.core.FingerprintEngine
 import com.agy.rewardsnode.core.KeywordEngine
 import com.agy.rewardsnode.core.ProfileManager
@@ -25,9 +26,13 @@ import com.agy.rewardsnode.data.EncryptedPreferences
 import com.agy.rewardsnode.data.db.AppDatabase
 import com.agy.rewardsnode.data.model.AccountProfile
 import com.agy.rewardsnode.ui.MainActivity
+import android.app.AlarmManager
+import android.content.Context
 import com.agy.rewardsnode.utils.AndroidMainDispatcher
 import com.agy.rewardsnode.utils.TelegramNotifier
 import com.agy.rewardsnode.utils.WakeLockHelper
+import org.json.JSONArray
+import java.util.Calendar
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
@@ -52,6 +57,7 @@ class RewardsForegroundService : Service() {
     private lateinit var vlogManager: VlogManager
     private lateinit var stateMachine: RewardsStateMachine
     private lateinit var wakeLockHelper: WakeLockHelper
+    private var telegramNotifier: TelegramNotifier? = null
 
     private var headlessWebView: WebView? = null
     private var activeAccountId: String? = null
@@ -63,8 +69,13 @@ class RewardsForegroundService : Service() {
         database = AppDatabase.getDatabase(this)
         profileManager = ProfileManager(this)
         keywordEngine = KeywordEngine()
+        keywordEngine.fetchTrendsAsync("US")
+        keywordEngine.fetchTrendsAsync("VN")
         vlogManager = VlogManager.getInstance(this)
         wakeLockHelper = WakeLockHelper(this)
+        telegramNotifier = if (prefs.telegramBotToken.isNotBlank() && prefs.telegramChatId.isNotBlank()) {
+            TelegramNotifier(prefs.telegramBotToken, prefs.telegramChatId)
+        } else null
 
         vlogManager.logSystem("Khởi tạo RewardsForegroundService", "Chuẩn bị vòng lặp điều phối")
 
@@ -73,6 +84,7 @@ class RewardsForegroundService : Service() {
             profileManager = profileManager,
             vlogManager = vlogManager,
             webViewProvider = { headlessWebView },
+            wakeLockHelper = wakeLockHelper,
             onExecuteSearch = { account, keyword, phase ->
                 executeSearchOnWebView(account, keyword, phase)
             },
@@ -81,7 +93,37 @@ class RewardsForegroundService : Service() {
             },
             onAccountUpdated = { updatedAccount ->
                 database.rewardsDao().updateProfile(updatedAccount)
-            }
+            },
+            onScheduleCooldownAlarm = { secs, account ->
+                val alarmAction = Runnable {
+                    destroyHeadlessWebView()
+                    wakeLockHelper.release()
+                    if (account.id == "all") {
+                        scheduleDailyAlarm()
+                        if (prefs.isAutoStopOnComplete) {
+                            stopNode()
+                        }
+                    } else {
+                        scheduleAlarmWakeup(secs, account.id)
+                    }
+                }
+                if (Looper.myLooper() == Looper.getMainLooper()) {
+                    alarmAction.run()
+                } else {
+                    mainHandler.post(alarmAction)
+                }
+            },
+            telegramNotifier = telegramNotifier,
+            database = database,
+            globalProxyProvider = { prefs.globalProxy },
+            searchDelayMinSec = prefs.searchDelayMinSec,
+            searchDelayMaxSec = prefs.searchDelayMaxSec,
+            maxClaimRetries = prefs.maxClaimRetries,
+            dapiMaxRetries = prefs.dapiMaxRetries,
+            cooldownTriggerBatches = prefs.cooldownTriggerBatches,
+            frozenStopBatches = prefs.frozenStopBatches,
+            maxReconciliationPasses = prefs.maxReconciliationPasses,
+            encryptedPrefs = prefs
         )
 
         setupMaintenanceLoop()
@@ -120,7 +162,31 @@ class RewardsForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> startNode()
+            ACTION_START -> {
+                val targetAccountId = intent.getStringExtra(EXTRA_TARGET_ACCOUNT_ID)
+                val isScheduledCheck = intent.getBooleanExtra("is_scheduled_check", false)
+                startNode(targetAccountId, isScheduledCheck)
+            }
+            ACTION_ALARM_WAKEUP -> {
+                val wakeupNotification = buildNotification("Khôi phục tiến trình...", "Đang tiếp tục chu kỳ...")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    startForeground(
+                        App.NOTIFICATION_ID,
+                        wakeupNotification,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    )
+                } else {
+                    startForeground(App.NOTIFICATION_ID, wakeupNotification)
+                }
+                val targetAccountId = intent.getStringExtra(EXTRA_TARGET_ACCOUNT_ID)
+                    ?: intent.getStringExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_ID)
+                val isScheduledCheck = intent.getBooleanExtra("is_scheduled_check", false)
+                if (stateMachine.isWaitingForAlarm() && !isScheduledCheck) {
+                    stateMachine.notifyAlarmWakeup()
+                } else {
+                    startNode(targetAccountId, isScheduledCheck)
+                }
+            }
             ACTION_STOP -> stopNode()
             null -> {
                 if (prefs.isNodeServiceRunning) {
@@ -131,8 +197,14 @@ class RewardsForegroundService : Service() {
         return START_STICKY
     }
 
-    private fun startNode() {
+    private fun startNode(targetAccountId: String? = null, isScheduledCheck: Boolean = false) {
+        if (serviceStartElapsedRealtime == 0L) {
+            serviceStartElapsedRealtime = android.os.SystemClock.elapsedRealtime()
+        }
         prefs.isNodeServiceRunning = true
+        if (isScheduledCheck) {
+            scheduleDailyAlarm(this)
+        }
         val notification = buildNotification("Đang khởi động Node...", "Đang tải danh sách profile...")
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -148,13 +220,43 @@ class RewardsForegroundService : Service() {
         serviceScope.launch(Dispatchers.IO) {
             val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
             val allAccounts = database.rewardsDao().getAllActiveProfiles()
-            val accounts = allAccounts.filter { it.isEnabled && !it.isAllMaxedOutToday(todayStr) }
+            val accounts = if (!targetAccountId.isNullOrBlank()) {
+                allAccounts.filter { it.id == targetAccountId }
+            } else if (isScheduledCheck) {
+                allAccounts.filter { it.isEnabled }
+            } else {
+                allAccounts.filter {
+                    it.isEnabled && !isAccountFullyCompletedToday(it, todayStr)
+                }
+            }
             if (accounts.isEmpty()) {
+                if (allAccounts.isNotEmpty() && targetAccountId.isNullOrBlank()) {
+                    val notifier = telegramNotifier ?: if (prefs.telegramBotToken.isNotBlank() && prefs.telegramChatId.isNotBlank()) {
+                        TelegramNotifier(prefs.telegramBotToken, prefs.telegramChatId)
+                    } else null
+                    if (notifier != null && prefs.lastCompletionSummaryDate != todayStr) {
+                        try {
+                            wakeLockHelper.acquire("FastPathCompletionSummary", 60000L)
+                            notifier.sendDailyCompletionReport(allAccounts, todayStr)
+                            prefs.lastCompletionSummaryDate = todayStr
+                        } catch (e: Exception) {
+                            android.util.Log.e("RewardsForegroundService", "Lỗi gửi báo cáo hoàn thành Telegram fast-path: ${e.message}")
+                        }
+                    }
+                }
                 withContext(AndroidMainDispatcher) {
                     if (allAccounts.isEmpty()) {
                         updateNotification("Chưa có tài khoản nào", "Vui lòng mở ứng dụng để thêm tài khoản.")
+                    } else if (!targetAccountId.isNullOrBlank()) {
+                        updateNotification("Tài khoản đã hoàn tất!", "Tài khoản đơn lẻ đã đạt tối đa rổ điểm hôm nay ($todayStr).")
+                        destroyHeadlessWebView()
+                        wakeLockHelper.release()
                     } else {
                         updateNotification("Hoàn thành tất cả tài khoản!", "Tất cả tài khoản đã đạt tối đa rổ điểm hôm nay ($todayStr).")
+                        scheduleDailyAlarm()
+                        if (prefs.isAutoStopOnComplete) {
+                            stopNode()
+                        }
                     }
                 }
                 return@launch
@@ -162,6 +264,14 @@ class RewardsForegroundService : Service() {
 
             withContext(AndroidMainDispatcher) {
                 initHeadlessWebView()
+                stateMachine.targetAccountId = targetAccountId
+                stateMachine.searchDelayMinSec = prefs.searchDelayMinSec
+                stateMachine.searchDelayMaxSec = prefs.searchDelayMaxSec
+                stateMachine.maxClaimRetries = prefs.maxClaimRetries
+                stateMachine.dapiMaxRetries = prefs.dapiMaxRetries
+                stateMachine.cooldownTriggerBatches = prefs.cooldownTriggerBatches
+                stateMachine.frozenStopBatches = prefs.frozenStopBatches
+                stateMachine.maxReconciliationPasses = prefs.maxReconciliationPasses
                 stateMachine.start(
                     accounts = accounts,
                     batchSize = prefs.batchSize,
@@ -173,19 +283,55 @@ class RewardsForegroundService : Service() {
 
             if (prefs.telegramBotToken.isNotBlank() && prefs.telegramChatId.isNotBlank()) {
                 val notifier = TelegramNotifier(prefs.telegramBotToken, prefs.telegramChatId)
-                notifier.sendMessage("🚀 *Rewards Node Đã Khởi Động*\nĐang chạy ${accounts.size} tài khoản ngầm trên Android.")
+                val targetInfo = if (!targetAccountId.isNullOrBlank()) {
+                    "Chạy đơn lẻ tài khoản: ${accounts.firstOrNull()?.email ?: targetAccountId}"
+                } else {
+                    "Đang chạy ${accounts.size} tài khoản ngầm trên Android."
+                }
+                notifier.sendMessage("🚀 *Rewards Node Đã Khởi Động*\n$targetInfo")
             }
         }
     }
 
+    private fun isAccountFullyCompletedToday(account: AccountProfile, todayStr: String): Boolean {
+        if (account.lastActiveDate != todayStr) return false
+        if (!account.dailySetDone) return false
+        if (account.claimablePoints > 0) return false
+        val effPcMax = if (account.pcMax > 0) account.pcMax else (if (account.level == 1) 30 else 90)
+        val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level == 1) 0 else 60)
+        val effEdgeMax = if (account.edgeMax > 0) account.edgeMax else 0
+        val pcDone = effPcMax == 0 || account.pcProgress >= effPcMax || prefs.isSearchExhaustedToday(account.id, todayStr)
+        val mobDone = effMobMax == 0 || account.mobileProgress >= effMobMax
+        val edgeDone = effEdgeMax == 0 || account.edgeProgress >= effEdgeMax
+        val hasDapiCredentials = !account.dapiRefreshToken.isNullOrBlank() || !account.dapiAccessToken.isNullOrBlank()
+        val checkInDone = prefs.isCheckInDoneToday(account.id, todayStr) ||
+            (prefs.isPhase05DoneToday(account.id, todayStr) && !hasDapiCredentials) ||
+            (prefs.getDapiAttemptsToday(account.id, todayStr) >= maxOf(1, prefs.dapiMaxRetries))
+        val readDone = account.readMax == 0 ||
+            account.readProgress >= account.readMax ||
+            (prefs.isPhase05DoneToday(account.id, todayStr) && !hasDapiCredentials) ||
+            (prefs.getDapiAttemptsToday(account.id, todayStr) >= maxOf(1, prefs.dapiMaxRetries))
+        return pcDone && mobDone && edgeDone && readDone && checkInDone
+    }
+
     private fun stopNode() {
+        serviceStartElapsedRealtime = 0L
         runningAccountIdFlow.value = null
         prefs.isNodeServiceRunning = false
         stateMachine.stop()
-        destroyHeadlessWebView()
         wakeLockHelper.release()
-        stopForeground(true)
-        stopSelf()
+        val stopOnMain = Runnable {
+            destroyHeadlessWebView()
+            try {
+                stopForeground(true)
+            } catch (_: Exception) {}
+            stopSelf()
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            stopOnMain.run()
+        } else {
+            mainHandler.post(stopOnMain)
+        }
     }
 
     private fun initHeadlessWebView() {
@@ -194,8 +340,26 @@ class RewardsForegroundService : Service() {
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.databaseEnabled = true
-                settings.mediaPlaybackRequiresUserGesture = false
+                settings.mediaPlaybackRequiresUserGesture = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.javaScriptCanOpenWindowsAutomatically = true
+                settings.setSupportMultipleWindows(false)
+                FingerprintEngine.stripXRequestedWith(this)
+                measure(
+                    android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
+                    android.view.View.MeasureSpec.makeMeasureSpec(1920, android.view.View.MeasureSpec.EXACTLY)
+                )
+                layout(0, 0, 1080, 1920)
+            }
+            headlessWebView?.webChromeClient = object : WebChromeClient() {
+                override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    result?.confirm()
+                    return true
+                }
+                override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                    result?.confirm()
+                    return true
+                }
             }
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
@@ -206,14 +370,24 @@ class RewardsForegroundService : Service() {
 
     private fun destroyHeadlessWebView() {
         activeAccountId = null
-        headlessWebView?.let { webView ->
-            webView.stopLoading()
-            webView.loadUrl("about:blank")
-            webView.clearHistory()
-            webView.removeAllViews()
-            webView.destroy()
-        }
+        val viewToDestroy = headlessWebView
         headlessWebView = null
+        if (viewToDestroy != null) {
+            val destroyAction = Runnable {
+                try {
+                    viewToDestroy.stopLoading()
+                    viewToDestroy.loadUrl("about:blank")
+                    viewToDestroy.clearHistory()
+                    viewToDestroy.removeAllViews()
+                    viewToDestroy.destroy()
+                } catch (_: Exception) {}
+            }
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                destroyAction.run()
+            } else {
+                mainHandler.post(destroyAction)
+            }
+        }
     }
 
     /**
@@ -224,21 +398,30 @@ class RewardsForegroundService : Service() {
         keyword: String,
         phase: RewardsStateMachine.SearchPhase
     ): Boolean = withContext(AndroidMainDispatcher) {
-            runningAccountIdFlow.value = account.id
-            wakeLockHelper.acquire("Search_${account.id}")
+        runningAccountIdFlow.value = account.id
+        wakeLockHelper.acquire("Search_${account.id}")
+        try {
             initHeadlessWebView()
             val webView = headlessWebView ?: return@withContext false
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true)
 
-            // Quản lý session boundary: chỉ clear session khi đổi sang tài khoản khác.
-            // Khi đổi UA giữa Desktop và Mobile trong cùng 1 account: KHÔNG gọi clearActiveSession,
-            // chỉ cập nhật webView.settings.userAgentString và stealth script để duy trì phiên đăng nhập & cookie.
-            if (activeAccountId != account.id) {
-                profileManager.clearActiveSession(webView)
-                activeAccountId = account.id
+            // Quản lý session boundary: chỉ hoán đổi session khi đổi sang tài khoản khác.
+            // Không thực hiện routeWebViewViaProxy + restoreCookiesForProfile lặp lại trên mỗi lượt tìm kiếm.
+            if (profileManager.activeAccountId != account.id) {
+                profileManager.switchSession(
+                    webView = webView,
+                    targetAccount = account,
+                    globalProxy = prefs.globalProxy,
+                    onSaveOutgoingSession = { outgoingId, cookies ->
+                        val outgoingAcc = database.rewardsDao().getProfileById(outgoingId)
+                        if (outgoingAcc != null) {
+                            outgoingAcc.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(outgoingAcc.cookiesSnapshot, cookies)
+                            database.rewardsDao().updateProfile(outgoingAcc)
+                        }
+                    }
+                )
             }
-            // Nạp Cookie của tài khoản hiện tại
-            profileManager.restoreCookiesForProfile(account.id, account.cookiesSnapshot)
+            activeAccountId = account.id
 
             // Kiểm tra và tự động kích hoạt Bing SSO Handshake nếu tài khoản chưa có token _RwBf
             if (!profileManager.hasRwBfToken(account.cookiesSnapshot)) {
@@ -250,8 +433,8 @@ class RewardsForegroundService : Service() {
                             if (cur.contains("bing.com") && !cur.contains("signin") && !cur.contains("oauth")) {
                                 CookieManager.getInstance().flush()
                                 val updatedCookies = profileManager.dumpCookiesForProfile(account.id)
-                                if (updatedCookies.isNotBlank()) {
-                                    account.cookiesSnapshot = updatedCookies
+                                if (updatedCookies.isNotBlank() && profileManager.hasValidBingSession(updatedCookies)) {
+                                    account.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, updatedCookies)
                                     serviceScope.launch(Dispatchers.IO) {
                                         database.rewardsDao().updateProfile(account)
                                     }
@@ -267,7 +450,7 @@ class RewardsForegroundService : Service() {
                 }
             }
 
-            val isDesktop = phase.isDesktop
+            val isDesktop = (phase == RewardsStateMachine.SearchPhase.PHASE_1_PC)
             val preset = FingerprintEngine.getEdgePresetForAccount(account.id, isDesktop)
             webView.settings.userAgentString = preset.userAgent
 
@@ -280,28 +463,60 @@ class RewardsForegroundService : Service() {
             val phaseLabel = phase.label
             vlogManager.logSearch("$phaseTag Bắt đầu lượt tìm kiếm cho ${account.email}", "[$phaseLabel] Từ khóa: \"$keyword\" (${preset.id})", account.email)
 
+            val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
+            val searchUrl = when (phase) {
+                RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+                RewardsStateMachine.SearchPhase.PHASE_2_MOBILE -> "https://www.bing.com/search?q=$encodedKeyword&form=STARTR&PC=EMMX01"
+                RewardsStateMachine.SearchPhase.PHASE_3_EDGE -> "https://www.bing.com/search?q=$encodedKeyword&form=MA13FW&pc=EUPH"
+                else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+            }
+            val extraHeaders = mapOf("Referer" to "https://www.bing.com/")
+
             return@withContext suspendCancellableCoroutine { continuation ->
-                var isCompleted = false
+                val isCompleted = java.util.concurrent.atomic.AtomicBoolean(false)
+                var isSerpDwellStarted = false
+                var hasInjectedTyping = false
+                var hasNavigatedToSerp = false
+                val startTimeMs = System.currentTimeMillis()
+                val minTypingTimeMs = (keyword.length * 75L) + 350L
+
+                var typingRunnable: Runnable? = null
+                var dwellRunnable: Runnable? = null
 
                 val timeoutRunnable = Runnable {
-                    if (!isCompleted && continuation.isActive) {
-                        isCompleted = true
+                    if (!isCompleted.get() && continuation.isActive) {
+                        isCompleted.set(true)
+                        typingRunnable?.let { r -> mainHandler.removeCallbacks(r) }
+                        dwellRunnable?.let { r -> mainHandler.removeCallbacks(r) }
                         vlogManager.logError("Hard Deadline Timeout (45s). Hủy lượt tìm kiếm để giải phóng tài nguyên.", "Keyword: $keyword", account.email, webView)
                         profileManager.clearActiveSessionAsync(webView)
                         activeAccountId = null
-                        wakeLockHelper.release()
                         continuation.resume(false)
                     }
                 }
 
                 continuation.invokeOnCancellation {
+                    isCompleted.set(true)
                     mainHandler.removeCallbacks(timeoutRunnable)
-                    wakeLockHelper.release()
+                    typingRunnable?.let { r -> mainHandler.removeCallbacks(r) }
+                    dwellRunnable?.let { r -> mainHandler.removeCallbacks(r) }
                 }
 
-                webView.webViewClient = object : WebViewClient() {
+                fun injectHumanTyping(targetView: WebView) {
+                    if (hasInjectedTyping || isCompleted.get()) return
+                    hasInjectedTyping = true
+                    vlogManager.logDom("Tiêm Human Typing Script gõ từ khóa: \"$keyword\"", account = account.email)
+                    val script = AutomationEngine.createHumanTypingScript(keyword, searchUrl)
+                    targetView.evaluateJavascript(script, null)
+                }
+
+                webView.webViewClient = object : DataSaverWebViewClient() {
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                         super.onPageStarted(view, url, favicon)
+                        val currentUrl = url ?: ""
+                        if (currentUrl.contains("bing.com/search")) {
+                            hasNavigatedToSerp = true
+                        }
                         val stealthScript = FingerprintEngine.createStealthScript(preset, isDesktop)
                         view?.evaluateJavascript(stealthScript, null)
 
@@ -334,9 +549,9 @@ class RewardsForegroundService : Service() {
                     }
 
                     override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                        isCompleted.set(true)
                         vlogManager.logError("Render process gone (Chromium renderer sập/thiếu RAM). Cấp phát lại WebView...", null, account.email)
                         destroyHeadlessWebView()
-                        wakeLockHelper.release()
                         mainHandler.removeCallbacks(timeoutRunnable)
                         if (continuation.isActive) {
                             continuation.resume(false)
@@ -349,11 +564,30 @@ class RewardsForegroundService : Service() {
                         val currentUrl = url ?: ""
 
                         if (currentUrl.contains("live.com/Abuse") || currentUrl.contains("challenges.cloudflare") || currentUrl.contains("identity/confirm")) {
-                            if (!isCompleted) {
-                                isCompleted = true
+                            if (!isCompleted.get()) {
+                                isCompleted.set(true)
                                 mainHandler.removeCallbacks(timeoutRunnable)
                                 vlogManager.logCaptcha("Phát hiện thử thách xác minh/khóa nick: $currentUrl", account = account.email)
                                 vlogManager.logError("Dừng và tự động tắt tài khoản do gặp trang thử thách bảo mật", currentUrl, account.email, view)
+
+                                // Day 11: Chụp ảnh màn hình WebView trong RAM và gửi cảnh báo qua Telegram Bot API
+                                if (view != null && view.width > 0 && view.height > 0 && prefs.telegramBotToken.isNotBlank() && prefs.telegramChatId.isNotBlank()) {
+                                    val screenshot = TelegramNotifier.captureBitmap(view)
+                                    if (screenshot != null) {
+                                        val alertCaption = "⚠️ *CẢNH BÁO XÁC MINH / BẢO MẬT BING REWARDS*\n" +
+                                            "👤 Tài khoản: `${account.email}`\n" +
+                                            "🔗 URL: `$currentUrl`\n" +
+                                            "🛡️ Hành động: Tự động dừng nick, tắt tài khoản để bảo vệ an toàn."
+                                        val notifier = TelegramNotifier(prefs.telegramBotToken, prefs.telegramChatId)
+                                        serviceScope.launch(Dispatchers.IO) {
+                                            try {
+                                                notifier.sendScreenshot(screenshot, alertCaption)
+                                            } finally {
+                                                screenshot.recycle()
+                                            }
+                                        }
+                                    }
+                                }
 
                                 // Tự động tắt tài khoản trong DB để tránh lặp và chống ban lan truyền
                                 account.isEnabled = false
@@ -363,132 +597,121 @@ class RewardsForegroundService : Service() {
 
                                 profileManager.clearActiveSessionAsync(view)
                                 activeAccountId = null
-                                wakeLockHelper.release()
                                 if (continuation.isActive) continuation.resume(false)
                             }
                             return
                         }
 
-                        if (currentUrl.contains("bing.com/search") && !isCompleted) {
-                            isCompleted = true
+                        // Nếu tải xong trang chủ Bing (hoặc trang non-SERP) mà chưa tiêm gõ từ khóa
+                        if (!hasInjectedTyping && !currentUrl.contains("bing.com/search") && currentUrl.contains("bing.com")) {
+                            typingRunnable = Runnable {
+                                if (!isCompleted.get() && !hasInjectedTyping && view != null) {
+                                    injectHumanTyping(view)
+                                }
+                            }
+                            mainHandler.postDelayed(typingRunnable!!, 400L)
+                            return
+                        }
+
+                        val isSerpFinished = currentUrl.contains("bing.com/search") &&
+                                (hasNavigatedToSerp || hasInjectedTyping || System.currentTimeMillis() - startTimeMs >= minTypingTimeMs)
+
+                        if (isSerpFinished && !isCompleted.get() && !isSerpDwellStarted) {
+                            isSerpDwellStarted = true
+                            dwellRunnable?.let { mainHandler.removeCallbacks(it) }
+                            // Gia hạn timeout watchdog thêm 25s cho dwell + balance extract an toàn
                             mainHandler.removeCallbacks(timeoutRunnable)
+                            mainHandler.postDelayed(timeoutRunnable, 25000L)
 
                             view?.evaluateJavascript("(function(){ return !!(document.querySelector('#challenge-stage') || document.querySelector('iframe[src*=\"arkoselabs\"]')); })();") { hasChallenge ->
+                                if (isCompleted.get() || !continuation.isActive || activeAccountId != account.id) return@evaluateJavascript
                                 if (hasChallenge == "true") {
+                                    isCompleted.set(true)
+                                    mainHandler.removeCallbacks(timeoutRunnable)
+                                    dwellRunnable?.let { mainHandler.removeCallbacks(it) }
                                     vlogManager.logCaptcha("Phát hiện Arkose Labs / Cloudflare Challenge trong DOM", account = account.email)
                                     vlogManager.logError("Dừng tài khoản do phát hiện Challenge trong DOM", null, account.email, view)
-                                    wakeLockHelper.release()
+
+                                    if (view != null && view.width > 0 && view.height > 0 && prefs.telegramBotToken.isNotBlank() && prefs.telegramChatId.isNotBlank()) {
+                                        val screenshot = TelegramNotifier.captureBitmap(view)
+                                        if (screenshot != null) {
+                                            val alertCaption = "⚠️ *CẢNH BÁO CAPTCHA ARKOSE LABS BING REWARDS*\n" +
+                                                "👤 Tài khoản: `${account.email}`\n" +
+                                                "🧩 Phát hiện: Arkose Labs / Cloudflare Challenge trong DOM\n" +
+                                                "🛡️ Hành động: Tự động dừng nick để bảo vệ an toàn."
+                                            val notifier = TelegramNotifier(prefs.telegramBotToken, prefs.telegramChatId)
+                                            serviceScope.launch(Dispatchers.IO) {
+                                                try {
+                                                    notifier.sendScreenshot(screenshot, alertCaption)
+                                                } finally {
+                                                    screenshot.recycle()
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    account.isEnabled = false
+                                    serviceScope.launch(Dispatchers.IO) {
+                                        database.rewardsDao().updateProfile(account)
+                                    }
+
                                     if (continuation.isActive) continuation.resume(false)
                                     return@evaluateJavascript
                                 }
 
-                                val dwellTimeMs = kotlin.random.Random.nextLong(8000L, 12001L)
-                                vlogManager.logDom("Tải xong kết quả tìm kiếm. Giữ trang (${dwellTimeMs / 1000}s) và cuộn trang mượt mà (Smooth scroll)", account = account.email)
-                                val scrollScript = AutomationEngine.createSmoothScrollScript()
+                                val isRestricted = stateMachine.isAccountCooldownRestricted(account.id)
+                                val zeroCount = stateMachine.getConsecutiveZeroDeltaSearches(account.id)
+                                val effectiveDelta = if (zeroCount > 0) 0 else 1
+                                val dwellTimeMs = AutomationEngine.computeDynamicDwellTime(deltaPoints = effectiveDelta, isRestricted = isRestricted)
+
+                                vlogManager.logDom("Tải xong kết quả tìm kiếm. Giữ trang (${dwellTimeMs / 1000}s), cuộn rời rạc & phát MotionEvent native", account = account.email)
+                                val scrollScript = AutomationEngine.createDiscreteScrollScript()
+                                AutomationEngine.dispatchNativeKineticScroll(view, 750f, 350f, 300L)
+
+                                // Bóc tách piggyback suggestions từ DOM SERP đưa vào KeywordEngine
+                                val piggybackScript = AutomationEngine.createPiggybackExtractorScript()
+                                view.evaluateJavascript(piggybackScript) { suggestionsJson ->
+                                    if (isCompleted.get() || !continuation.isActive || activeAccountId != account.id) return@evaluateJavascript
+                                    try {
+                                        if (!suggestionsJson.isNullOrBlank() && suggestionsJson.length <= 16384 && suggestionsJson != "null" && suggestionsJson != "[]") {
+                                            val jsonArray = JSONArray(suggestionsJson)
+                                            val suggestions = mutableListOf<String>()
+                                            for (idx in 0 until jsonArray.length()) {
+                                                val item = jsonArray.optString(idx, "").trim()
+                                                if (item.isNotBlank()) {
+                                                    suggestions.add(item)
+                                                }
+                                            }
+                                            if (suggestions.isNotEmpty()) {
+                                                keywordEngine.feedPiggybackSuggestions(suggestions)
+                                                vlogManager.logSearch("Thu hoạch ${suggestions.size} từ khóa gợi ý tự nhiên (Piggyback)", suggestions.take(3).joinToString(", "), account.email)
+                                            }
+                                        }
+                                    } catch (_: Exception) {}
+                                }
 
                                 view.evaluateJavascript(scrollScript) {
-                                    mainHandler.postDelayed({
-                                        // Lưu cookie mới nhất
+                                    if (isCompleted.get() || !continuation.isActive || activeAccountId != account.id) return@evaluateJavascript
+                                    dwellRunnable?.let { mainHandler.removeCallbacks(it) }
+                                    dwellRunnable = Runnable {
+                                        if (isCompleted.get() || !continuation.isActive || activeAccountId != account.id) return@Runnable
+                                        // Lưu cookie mới nhất nếu phiên đăng nhập Bing hợp lệ
                                         val savedCookies = profileManager.dumpCookiesForProfile(account.id)
-                                        if (savedCookies.isNotBlank()) {
-                                            account.cookiesSnapshot = savedCookies
+                                        if (savedCookies.isNotBlank() && profileManager.hasValidBingSession(savedCookies)) {
+                                            account.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, savedCookies)
                                             serviceScope.launch(Dispatchers.IO) {
                                                 database.rewardsDao().updateProfile(account)
                                             }
                                         }
 
-                                        // Trích xuất điểm inline và update vào account trong DB + vlogManager.logPoints
-                                        RewardsBalanceExtractor.extractFromWebView(view) { balance ->
-                                            if (balance.isSuccess && balance.availablePoints > 0) {
-                                                account.availablePoints = balance.availablePoints
-                                                if (balance.lifetimePoints > 0) {
-                                                    account.lifetimePoints = balance.lifetimePoints
-                                                }
-                                                if (balance.streakCount > 0) {
-                                                    account.streakCount = balance.streakCount
-                                                }
-                                                val serverEarned = balance.pointsEarnedToday
-                                                val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                                                if (account.baselinePointsToday <= 0 || account.lastActiveDate != todayStr) {
-                                                    account.baselinePointsToday = balance.availablePoints
-                                                    account.lastActiveDate = todayStr
-                                                }
-                                                account.pointsEarnedToday = maxOf(serverEarned, maxOf(0, account.availablePoints - account.baselinePointsToday))
-                                                account.totalPoints = balance.availablePoints
-
-                                                // Cập nhật rổ điểm vào AccountProfile
-                                                account.pcProgress = balance.pcProgress
-                                                account.pcMax = balance.pcMax
-                                                account.mobileProgress = balance.mobileProgress
-                                                account.mobileMax = balance.mobileMax
-                                                account.edgeProgress = balance.edgeProgress
-                                                account.edgeMax = balance.edgeMax
-
-                                                // Tự động targetSearches Level 1=15, Level 2=55
-                                                if (balance.mobileMax > 0 || balance.pcMax > 30) {
-                                                    account.level = 2
-                                                } else if (balance.pcMax in 1..30 && balance.mobileMax == 0) {
-                                                    account.level = 1
-                                                }
-                                                account.targetSearches = if (account.level == 1) 35 else 55
-
-                                                serviceScope.launch(Dispatchers.IO) {
-                                                    database.rewardsDao().updateProfile(account)
-                                                }
-
-                                                vlogManager.logPoints(
-                                                    "Cập nhật điểm inline: ${account.availablePoints} pts",
-                                                    "Đã kiếm hôm nay: +${account.pointsEarnedToday} pts | PC: ${account.pcProgress}/${account.pcMax}, Mob: ${account.mobileProgress}/${account.mobileMax}, Edge: ${account.edgeProgress}/${account.edgeMax} [${balance.source}]",
-                                                    account.email
-                                                )
-                                            } else {
-                                                // Fallback: truy vấn Dashboard HTTP nếu DOM SERP chưa kịp render widget
-                                                serviceScope.launch(Dispatchers.IO) {
-                                                    val httpBal = RewardsBalanceExtractor.extractPointsViaHttp(account.cookiesSnapshot, preset.userAgent)
-                                                    if (httpBal.isSuccess && httpBal.availablePoints > 0) {
-                                                        account.availablePoints = httpBal.availablePoints
-                                                        if (httpBal.lifetimePoints > 0) account.lifetimePoints = httpBal.lifetimePoints
-                                                        if (httpBal.streakCount > 0) account.streakCount = httpBal.streakCount
-                                                        val serverEarned = httpBal.pointsEarnedToday
-                                                        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                                                        if (account.baselinePointsToday <= 0 || account.lastActiveDate != todayStr) {
-                                                            account.baselinePointsToday = httpBal.availablePoints
-                                                            account.lastActiveDate = todayStr
-                                                        }
-                                                        account.pointsEarnedToday = maxOf(serverEarned, maxOf(0, account.availablePoints - account.baselinePointsToday))
-                                                        account.totalPoints = httpBal.availablePoints
-
-                                                        account.pcProgress = httpBal.pcProgress
-                                                        account.pcMax = httpBal.pcMax
-                                                        account.mobileProgress = httpBal.mobileProgress
-                                                        account.mobileMax = httpBal.mobileMax
-                                                        account.edgeProgress = httpBal.edgeProgress
-                                                        account.edgeMax = httpBal.edgeMax
-
-                                                        if (httpBal.mobileMax > 0 || httpBal.pcMax > 30) {
-                                                            account.level = 2
-                                                        } else if (httpBal.pcMax in 1..30 && httpBal.mobileMax == 0) {
-                                                            account.level = 1
-                                                        }
-                                                        account.targetSearches = if (account.level == 1) 35 else 55
-
-                                                        database.rewardsDao().updateProfile(account)
-                                                        vlogManager.logPoints(
-                                                            "Cập nhật điểm qua Dashboard HTTP: ${account.availablePoints} pts",
-                                                            "Đã kiếm hôm nay: +${account.pointsEarnedToday} pts | PC: ${account.pcProgress}/${account.pcMax} [${httpBal.source}]",
-                                                            account.email
-                                                        )
-                                                    }
-                                                }
-                                            }
-
-                                                wakeLockHelper.release()
-                                                vlogManager.logSearch("$phaseTag Lượt tìm kiếm hoàn tất thành công", "Keyword: \"$keyword\" (Dwell: ${dwellTimeMs / 1000}s)", account.email)
-                                                if (continuation.isActive) {
-                                                    continuation.resume(true)
-                                                }
-                                            }
-                                    }, dwellTimeMs) // Dwell time 8-12s
+                                        isCompleted.set(true)
+                                        mainHandler.removeCallbacks(timeoutRunnable)
+                                        vlogManager.logSearch("$phaseTag Lượt tìm kiếm hoàn tất thành công", "Keyword: \"$keyword\" (Dwell: ${dwellTimeMs / 1000}s)", account.email)
+                                        if (continuation.isActive) {
+                                            continuation.resume(true)
+                                        }
+                                    }
+                                    dwellRunnable?.let { mainHandler.postDelayed(it, dwellTimeMs) } // Dwell time 8-12s
                                 }
                             }
                         }
@@ -496,11 +719,17 @@ class RewardsForegroundService : Service() {
 
                     override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
                         super.onReceivedError(view, request, error)
-                        if (request?.isForMainFrame == true && !isCompleted) {
-                            isCompleted = true
+                        if (request?.isForMainFrame == true && !isCompleted.get()) {
+                            isCompleted.set(true)
                             mainHandler.removeCallbacks(timeoutRunnable)
                             vlogManager.logError("Lỗi tải trang chính WebView", "Error code: ${error?.errorCode}", account.email, view)
-                            wakeLockHelper.release()
+                            val effectiveProxy = ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy)
+                            if (!effectiveProxy.isNullOrBlank()) {
+                                val tripped = profileManager.recordProxyFailure(effectiveProxy)
+                                if (tripped) {
+                                    vlogManager.logNetwork("Proxy Circuit Breaker ĐÃ NGẮT cho $effectiveProxy (Lỗi >= 3 lần liên tiếp)", "Tự động cách ly tài khoản", account.email)
+                                }
+                            }
                             if (continuation.isActive) {
                                 continuation.resume(false)
                             }
@@ -508,19 +737,15 @@ class RewardsForegroundService : Service() {
                     }
                 }
 
-                val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
-                val searchUrl = when (phase) {
-                    RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
-                    RewardsStateMachine.SearchPhase.PHASE_2_MOBILE -> "https://www.bing.com/search?q=$encodedKeyword&form=STARTR&PC=EMMX01"
-                    RewardsStateMachine.SearchPhase.PHASE_3_EDGE -> "https://www.bing.com/search?q=$encodedKeyword&form=MA13FW&pc=EUPH"
-                    else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
-                }
-                vlogManager.logNetwork("$phaseTag Mở kết nối tới $searchUrl", "Proxy: ${account.proxyUrl ?: "Direct"}", account.email)
-                val extraHeaders = mapOf("Referer" to "https://www.bing.com/")
-                webView.loadUrl(searchUrl, extraHeaders)
                 mainHandler.postDelayed(timeoutRunnable, 45000L)
+
+                vlogManager.logNetwork("$phaseTag Tải trang chủ Bing để bắt đầu tìm kiếm người thật", "Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
+                webView.loadUrl("https://www.bing.com/", extraHeaders)
             }
+        } finally {
+            // Giữ CPU/WiFi lock xuyên suốt inter-search jitter; chỉ nhả khi Cooldown/Stop/Complete
         }
+    }
 
     private fun updateNotification(status: String, details: String) {
         val notification = buildNotification(status, details)
@@ -571,6 +796,48 @@ class RewardsForegroundService : Service() {
         return builder.build()
     }
 
+    fun scheduleAlarmWakeup(cooldownSecs: Long, accountId: String? = null, isDailyReset: Boolean = false) {
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+        val intent = Intent(this, CooldownAlarmReceiver::class.java).apply {
+            action = CooldownAlarmReceiver.ACTION_COOLDOWN_WAKEUP
+            if (!accountId.isNullOrBlank()) {
+                putExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_ID, accountId)
+            }
+            putExtra("is_daily_reset", isDailyReset)
+        }
+
+        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val pendingIntent = PendingIntent.getBroadcast(this, RC_COOLDOWN_ALARM, intent, flags)
+
+        val triggerAtMillis = System.currentTimeMillis() + (cooldownSecs * 1000L)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExact(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            }
+            val wakeupTimeStr = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(triggerAtMillis))
+            vlogManager.logCooldown(
+                "[ZERO WAKE-LOCK] Đã lên lịch AlarmManager (${cooldownSecs}s) thức giấc lúc $wakeupTimeStr",
+                "Giải phóng WebView & nhả CPU WakeLock để thiết bị vào Deep Sleep (Doze Mode)."
+            )
+        } catch (e: Exception) {
+            vlogManager.logError("Lỗi lên lịch AlarmManager thức giấc", e.message)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         runningAccountIdFlow.value = null
@@ -581,9 +848,118 @@ class RewardsForegroundService : Service() {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    fun scheduleDailyAlarm() {
+        destroyHeadlessWebView()
+        wakeLockHelper.release()
+        Companion.scheduleDailyAlarm(this)
+    }
+
     companion object {
         const val ACTION_START = "com.agy.rewardsnode.START"
         const val ACTION_STOP = "com.agy.rewardsnode.STOP"
+        const val ACTION_ALARM_WAKEUP = "com.agy.rewardsnode.ALARM_WAKEUP"
+        const val EXTRA_TARGET_ACCOUNT_ID = "extra_target_account_id"
+        const val RC_COOLDOWN_ALARM = 1001
+        const val RC_DAILY_SCHEDULE_ALARM = 1002
         val runningAccountIdFlow = MutableStateFlow<String?>(null)
+        @Volatile var serviceStartElapsedRealtime: Long = 0L
+
+        /**
+         * Tính toán mốc thời gian kích hoạt gần nhất trong tương lai từ danh sách 1-3 khung giờ hẹn hàng ngày.
+         * Trả về Pair(triggerAtMillis, Pair(hour, minute)).
+         */
+        fun computeNextScheduleTriggerMillis(
+            slots: List<Pair<Int, Int>>,
+            nowMillis: Long = System.currentTimeMillis()
+        ): Pair<Long, Pair<Int, Int>>? {
+            if (slots.isEmpty()) return null
+            val candidates = slots.map { (hour, minute) ->
+                val cal = Calendar.getInstance().apply {
+                    timeInMillis = nowMillis
+                    set(Calendar.HOUR_OF_DAY, hour)
+                    set(Calendar.MINUTE, minute)
+                    set(Calendar.SECOND, 0)
+                    set(Calendar.MILLISECOND, 0)
+                }
+                if (cal.timeInMillis <= nowMillis + 5000L) {
+                    cal.add(Calendar.DAY_OF_YEAR, 1)
+                }
+                Pair(cal.timeInMillis, Pair(hour, minute))
+            }
+            return candidates.minByOrNull { it.first }
+        }
+
+        fun cancelDailyAlarm(context: Context) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+            val intent = Intent(context, CooldownAlarmReceiver::class.java).apply {
+                action = CooldownAlarmReceiver.ACTION_COOLDOWN_WAKEUP
+                putExtra("is_daily_reset", true)
+            }
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getBroadcast(context, RC_DAILY_SCHEDULE_ALARM, intent, flags)
+            alarmManager.cancel(pendingIntent)
+        }
+
+        fun scheduleDailyAlarm(context: Context) {
+            val prefs = EncryptedPreferences(context)
+            if (!prefs.isAutoDailySchedule) {
+                cancelDailyAlarm(context)
+                return
+            }
+
+            val enabledSlots = prefs.getEnabledScheduleSlots()
+            if (enabledSlots.isEmpty()) {
+                cancelDailyAlarm(context)
+                return
+            }
+
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+            val nextSlot = computeNextScheduleTriggerMillis(enabledSlots) ?: return
+            val triggerAtMillis = nextSlot.first
+            val targetHour = nextSlot.second.first
+            val targetMinute = nextSlot.second.second
+
+            val intent = Intent(context, CooldownAlarmReceiver::class.java).apply {
+                action = CooldownAlarmReceiver.ACTION_COOLDOWN_WAKEUP
+                putExtra("is_daily_reset", true)
+            }
+
+            val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            } else {
+                PendingIntent.FLAG_UPDATE_CURRENT
+            }
+            val pendingIntent = PendingIntent.getBroadcast(context, RC_DAILY_SCHEDULE_ALARM, intent, flags)
+
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setExactAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAtMillis,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager.setExact(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAtMillis,
+                        pendingIntent
+                    )
+                }
+                val timeStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(triggerAtMillis))
+                val slotsSummary = enabledSlots.joinToString(", ") { String.format(Locale.getDefault(), "%02d:%02d", it.first, it.second) }
+                val vlogManager = VlogManager.getInstance(context)
+                vlogManager.logSystem(
+                    "🌅 [DAILY SCHEDULE] Đã lập lịch AlarmManager kiểm tra tiếp theo lúc $timeStr",
+                    "Khung giờ kế tiếp: ${String.format(Locale.getDefault(), "%02d:%02d", targetHour, targetMinute)} | Các khung giờ hẹn trong ngày: [$slotsSummary] (100% Zero-WakeLock Deep Sleep)."
+                )
+            } catch (e: Exception) {
+                val vlogManager = VlogManager.getInstance(context)
+                vlogManager.logError("Lỗi lên lịch AlarmManager hàng ngày", e.message)
+            }
+        }
     }
 }

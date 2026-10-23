@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.Flow
 
 interface VlogDao {
     fun getRecentVlogsFlow(limit: Int = 300): Flow<List<VlogEntry>>
+    suspend fun getRecentVlogs(limit: Int = 300): List<VlogEntry>
+    suspend fun getPointHistoryVlogs(limit: Int = 500): List<VlogEntry>
     fun getVlogsByTagFlow(tag: String, limit: Int = 300): Flow<List<VlogEntry>>
     fun getErrorVlogsFlow(limit: Int = 100): Flow<List<VlogEntry>>
     suspend fun insertVlogs(entries: List<VlogEntry>)

@@ -27,23 +27,23 @@ class ActivityRingView @JvmOverloads constructor(
         private const val ANIMATION_DURATION_MS = 800L
     }
 
-    private val outerStrokeWidth = dpToPx(11f)
-    private val middleStrokeWidth = dpToPx(9f)
-    private val innerStrokeWidth = dpToPx(7f)
-    private val ringGap = dpToPx(3f)
+    private var outerStrokeWidth = 0f
+    private var middleStrokeWidth = 0f
+    private var innerStrokeWidth = 0f
+    private var ringGap = 0f
 
     private val outerRect = RectF()
     private val middleRect = RectF()
     private val innerRect = RectF()
 
-    private val outerTrackPaint = createPaint(COLOR_PC, TRACK_ALPHA_RATIO, outerStrokeWidth)
-    private val outerProgressPaint = createPaint(COLOR_PC, 1.0f, outerStrokeWidth)
+    private val outerTrackPaint = createPaint(COLOR_PC, TRACK_ALPHA_RATIO)
+    private val outerProgressPaint = createPaint(COLOR_PC, 1.0f)
 
-    private val middleTrackPaint = createPaint(COLOR_EDGE, TRACK_ALPHA_RATIO, middleStrokeWidth)
-    private val middleProgressPaint = createPaint(COLOR_EDGE, 1.0f, middleStrokeWidth)
+    private val middleTrackPaint = createPaint(COLOR_EDGE, TRACK_ALPHA_RATIO)
+    private val middleProgressPaint = createPaint(COLOR_EDGE, 1.0f)
 
-    private val innerTrackPaint = createPaint(COLOR_MOBILE, TRACK_ALPHA_RATIO, innerStrokeWidth)
-    private val innerProgressPaint = createPaint(COLOR_MOBILE, 1.0f, innerStrokeWidth)
+    private val innerTrackPaint = createPaint(COLOR_MOBILE, TRACK_ALPHA_RATIO)
+    private val innerProgressPaint = createPaint(COLOR_MOBILE, 1.0f)
 
     private var currentPcRatio = 0f
     private var currentEdgeRatio = 0f
@@ -51,7 +51,7 @@ class ActivityRingView @JvmOverloads constructor(
 
     private var animator: ValueAnimator? = null
 
-    private fun createPaint(color: Int, alphaRatio: Float, strokeWidth: Float): Paint {
+    private fun createPaint(color: Int, alphaRatio: Float, strokeWidth: Float = 0f): Paint {
         val alpha = (255 * alphaRatio).roundToInt().coerceIn(0, 255)
         val finalColor = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
         return Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -77,7 +77,24 @@ class ActivityRingView @JvmOverloads constructor(
         val contentWidth = (w - paddingLeft - paddingRight).coerceAtLeast(0)
         val contentHeight = (h - paddingTop - paddingBottom).coerceAtLeast(0)
         val diameter = min(contentWidth, contentHeight).toFloat()
-        if (diameter <= 0f) return
+        if (diameter <= 0f) {
+            outerRect.setEmpty()
+            middleRect.setEmpty()
+            innerRect.setEmpty()
+            return
+        }
+
+        outerStrokeWidth = diameter * 0.075f
+        middleStrokeWidth = diameter * 0.060f
+        innerStrokeWidth = diameter * 0.050f
+        ringGap = diameter * 0.020f
+
+        outerTrackPaint.strokeWidth = outerStrokeWidth
+        outerProgressPaint.strokeWidth = outerStrokeWidth
+        middleTrackPaint.strokeWidth = middleStrokeWidth
+        middleProgressPaint.strokeWidth = middleStrokeWidth
+        innerTrackPaint.strokeWidth = innerStrokeWidth
+        innerProgressPaint.strokeWidth = innerStrokeWidth
 
         val cx = paddingLeft + contentWidth / 2f
         val cy = paddingTop + contentHeight / 2f

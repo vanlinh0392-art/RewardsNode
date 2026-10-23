@@ -231,6 +231,22 @@
             android:layout_weight="1" />
 
         <Button
+            android:id="@+id/btnRunSingle"
+            android:layout_width="wrap_content"
+            android:layout_height="28dp"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_micro_pill_all"
+            android:minWidth="0dp"
+            android:minHeight="28dp"
+            android:paddingHorizontal="8dp"
+            android:stateListAnimator="@null"
+            android:text="▶ Chạy"
+            android:textAllCaps="false"
+            android:textColor="#10B981"
+            android:textSize="10sp"
+            android:textStyle="bold" />
+
+        <Button
             android:id="@+id/btnRefreshPoints"
             android:layout_width="wrap_content"
             android:layout_height="28dp"

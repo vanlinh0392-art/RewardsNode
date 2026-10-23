@@ -1,9 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.RewardsNode" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar">
-        <item name="android:colorPrimary">@color/primary</item>
-        <item name="android:colorPrimaryDark">@color/primary_dark</item>
-        <item name="android:colorAccent">@color/accent</item>
-        <item name="android:statusBarColor">@color/primary_dark</item>
-        <item name="android:windowBackground">@color/background</item>
+    <style name="Theme.RewardsNode" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:colorPrimary">@color/edge_blue</item>
+        <item name="android:colorPrimaryDark">@color/amoled_black</item>
+        <item name="android:colorAccent">@color/bing_cyan</item>
+        <item name="android:statusBarColor">@color/amoled_black</item>
+        <item name="android:navigationBarColor">@color/amoled_black</item>
+        <item name="android:windowBackground">@color/amoled_black</item>
+        <item name="android:colorBackground">@color/amoled_black</item>
     </style>
 </resources>

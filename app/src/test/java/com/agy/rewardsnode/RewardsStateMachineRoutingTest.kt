@@ -12,7 +12,7 @@ import org.junit.Test
 class RewardsStateMachineRoutingTest {
 
     @Test
-    fun testLevel1DoesNotSkipMobileInitially() {
+    fun testLevel1SkipsMobileSearchDueToLevelGating() {
         val account = AccountProfile(
             id = "test-acc-1",
             email = "level1@example.com",
@@ -35,9 +35,9 @@ class RewardsStateMachineRoutingTest {
             onAccountUpdated = { }
         )
 
-        // PC is maxed (30/30), so evaluateNextSearchPhase starting from Phase 1 should advance to Phase 2 (Mobile)!
+        // PC is maxed (30/30), Level 1 (< 2) skips Phase 2 Mobile and advances to Phase 3 Edge
         val nextPhase = sm.evaluateNextSearchPhase(account, SearchPhase.PHASE_1_PC)
-        assertEquals("Level 1 with maxed PC must advance to Phase 2 (Mobile), NOT skip to Phase 3 or DONE", SearchPhase.PHASE_2_MOBILE, nextPhase)
+        assertEquals("Level 1 with maxed PC must skip Phase 2 (Mobile) due to Level Gating (<2) and advance to Phase 3 (Edge)", SearchPhase.PHASE_3_EDGE, nextPhase)
     }
 
     @Test

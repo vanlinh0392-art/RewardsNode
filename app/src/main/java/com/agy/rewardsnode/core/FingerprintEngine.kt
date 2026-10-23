@@ -1,9 +1,13 @@
 package com.agy.rewardsnode.core
 
+import android.util.Log
+import android.webkit.WebView
+
 /**
  * Động cơ giả lập danh tính trình duyệt & vân tay phần cứng (Browser Stealth & Fingerprint Engine).
- * Cung cấp 24 cấu hình thiết bị thực tế (12 Desktop, 12 Mobile) và kịch bản JavaScript
- * ghi đè Navigator, Client Hints (User-Agent Client Hints API) và triệt tiêu cờ navigator.webdriver.
+ * Cung cấp 24 cấu hình thiết bị thực tế (12 Desktop, 12 Mobile) chuẩn Edge/Chromium 131-134
+ * và kịch bản JavaScript ghi đè Navigator, Client Hints (User-Agent Client Hints API),
+ * triệt tiêu cờ navigator.webdriver và triệt tiêu header X-Requested-With.
  */
 object FingerprintEngine {
 
@@ -21,12 +25,12 @@ object FingerprintEngine {
         val screenHeight: Int
     )
 
-    // 12 Cấu hình Desktop: Win 11/10 Edge/Chrome 122-126, macOS
+    // 12 Cấu hình Desktop: Win 11 24H2, Win 10, macOS 15 Sequoia (Edge / Chrome 131-134)
     val DESKTOP = listOf(
         FingerprintPreset(
-            id = "desktop_win11_edge126",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Microsoft Edge\";v=\"126\"",
+            id = "desktop_win11_edge134",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"Windows\"",
             secChUaModel = "\"\"",
@@ -37,9 +41,9 @@ object FingerprintEngine {
             screenHeight = 1080
         ),
         FingerprintPreset(
-            id = "desktop_win11_chrome126",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"",
+            id = "desktop_win11_chrome134",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"Windows\"",
             secChUaModel = "\"\"",
@@ -50,9 +54,74 @@ object FingerprintEngine {
             screenHeight = 1440
         ),
         FingerprintPreset(
-            id = "desktop_win10_edge125",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36 Edg/125.0.0.0",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Microsoft Edge\";v=\"125\"",
+            id = "desktop_win11_edge133",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"Windows\"",
+            secChUaModel = "\"\"",
+            platform = "Win32",
+            deviceMemory = 16,
+            hardwareConcurrency = 16,
+            screenWidth = 1920,
+            screenHeight = 1080
+        ),
+        FingerprintPreset(
+            id = "desktop_win11_chrome133",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"Windows\"",
+            secChUaModel = "\"\"",
+            platform = "Win32",
+            deviceMemory = 32,
+            hardwareConcurrency = 16,
+            screenWidth = 2560,
+            screenHeight = 1440
+        ),
+        FingerprintPreset(
+            id = "desktop_win11_edge132",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"132\", \"Chromium\";v=\"132\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"Windows\"",
+            secChUaModel = "\"\"",
+            platform = "Win32",
+            deviceMemory = 16,
+            hardwareConcurrency = 8,
+            screenWidth = 1920,
+            screenHeight = 1080
+        ),
+        FingerprintPreset(
+            id = "desktop_win11_chrome132",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"132\", \"Chromium\";v=\"132\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"Windows\"",
+            secChUaModel = "\"\"",
+            platform = "Win32",
+            deviceMemory = 8,
+            hardwareConcurrency = 8,
+            screenWidth = 1920,
+            screenHeight = 1200
+        ),
+        FingerprintPreset(
+            id = "desktop_win11_edge131",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"131\", \"Chromium\";v=\"131\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"Windows\"",
+            secChUaModel = "\"\"",
+            platform = "Win32",
+            deviceMemory = 16,
+            hardwareConcurrency = 16,
+            screenWidth = 1920,
+            screenHeight = 1080
+        ),
+        FingerprintPreset(
+            id = "desktop_win10_edge133",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"Windows\"",
             secChUaModel = "\"\"",
@@ -63,9 +132,9 @@ object FingerprintEngine {
             screenHeight = 1080
         ),
         FingerprintPreset(
-            id = "desktop_win10_chrome125",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Google Chrome\";v=\"125\"",
+            id = "desktop_win10_chrome133",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"Windows\"",
             secChUaModel = "\"\"",
@@ -76,35 +145,9 @@ object FingerprintEngine {
             screenHeight = 900
         ),
         FingerprintPreset(
-            id = "desktop_win11_edge124",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"124\", \"Microsoft Edge\";v=\"124\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"Windows\"",
-            secChUaModel = "\"\"",
-            platform = "Win32",
-            deviceMemory = 16,
-            hardwareConcurrency = 16,
-            screenWidth = 1920,
-            screenHeight = 1080
-        ),
-        FingerprintPreset(
-            id = "desktop_win11_chrome124",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"Windows\"",
-            secChUaModel = "\"\"",
-            platform = "Win32",
-            deviceMemory = 16,
-            hardwareConcurrency = 8,
-            screenWidth = 1920,
-            screenHeight = 1200
-        ),
-        FingerprintPreset(
-            id = "desktop_win10_edge123",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Microsoft Edge\";v=\"123\"",
+            id = "desktop_win10_edge132",
+            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"132\", \"Chromium\";v=\"132\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"Windows\"",
             secChUaModel = "\"\"",
@@ -115,229 +158,199 @@ object FingerprintEngine {
             screenHeight = 768
         ),
         FingerprintPreset(
-            id = "desktop_win10_chrome123",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"123\", \"Google Chrome\";v=\"123\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"Windows\"",
-            secChUaModel = "\"\"",
-            platform = "Win32",
-            deviceMemory = 8,
-            hardwareConcurrency = 4,
-            screenWidth = 1920,
-            screenHeight = 1080
-        ),
-        FingerprintPreset(
-            id = "desktop_win11_edge122",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 Edg/122.0.0.0",
-            secChUa = "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Microsoft Edge\";v=\"122\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"Windows\"",
-            secChUaModel = "\"\"",
-            platform = "Win32",
-            deviceMemory = 16,
-            hardwareConcurrency = 16,
-            screenWidth = 2560,
-            screenHeight = 1440
-        ),
-        FingerprintPreset(
-            id = "desktop_win11_chrome122",
-            userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            secChUa = "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"Windows\"",
-            secChUaModel = "\"\"",
-            platform = "Win32",
-            deviceMemory = 32,
-            hardwareConcurrency = 16,
-            screenWidth = 1920,
-            screenHeight = 1080
-        ),
-        FingerprintPreset(
-            id = "desktop_mac_edge126",
-            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Microsoft Edge\";v=\"126\"",
-            secChUaMobile = "?0",
-            secChUaPlatform = "\"macOS\"",
-            secChUaModel = "\"\"",
-            platform = "MacIntel",
-            deviceMemory = 16,
-            hardwareConcurrency = 8,
-            screenWidth = 1728,
-            screenHeight = 1117
-        ),
-        FingerprintPreset(
-            id = "desktop_mac_chrome125",
-            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Google Chrome\";v=\"125\"",
+            id = "desktop_mac15_edge134",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0",
+            secChUa = "\"Microsoft Edge\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?0",
             secChUaPlatform = "\"macOS\"",
             secChUaModel = "\"\"",
             platform = "MacIntel",
             deviceMemory = 16,
             hardwareConcurrency = 10,
+            screenWidth = 1728,
+            screenHeight = 1117
+        ),
+        FingerprintPreset(
+            id = "desktop_mac15_chrome133",
+            userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?0",
+            secChUaPlatform = "\"macOS\"",
+            secChUaModel = "\"\"",
+            platform = "MacIntel",
+            deviceMemory = 16,
+            hardwareConcurrency = 8,
             screenWidth = 1440,
             screenHeight = 900
         )
     )
 
-    // 12 Cấu hình Mobile: Pixel 8/7, Galaxy S24/S23, Xiaomi 14/13
+    /**
+     * Cấu hình thiết bị đăng nhập chuẩn Edge Android (EdgA 133) trên Xiaomi 14 (Android 14).
+     * Khớp hoàn toàn với phần cứng thực tế (Qualcomm Adreno GPU, touchPoints=10, màn hình dọc 393x852)
+     * nhằm triệt tiêu hoàn toàn cảnh báo "This browser or app may not be secure" từ Microsoft SSO.
+     */
+    val LOGIN_MOBILE_PRESET = FingerprintPreset(
+        id = "mobile_xiaomi14_edge133",
+        userAgent = "Mozilla/5.0 (Linux; Android 14; 23127PN0CG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36 EdgA/133.0.3065.82",
+        secChUa = "\"Microsoft Edge\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
+        secChUaMobile = "?1",
+        secChUaPlatform = "\"Android\"",
+        secChUaModel = "\"23127PN0CG\"",
+        platform = "Linux armv8l",
+        deviceMemory = 12,
+        hardwareConcurrency = 8,
+        screenWidth = 393,
+        screenHeight = 852
+    )
+
+    fun getMobileLoginPreset(): FingerprintPreset = LOGIN_MOBILE_PRESET
+
+    // 12 Cấu hình Mobile: Pixel 9/9 Pro, Galaxy S25/S24, Xiaomi 14 trên Android 14 & Android 15
     val MOBILE = listOf(
         FingerprintPreset(
-            id = "mobile_pixel8_chrome126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"",
+            id = "mobile_pixel9pro_edge134",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.35 Mobile Safari/537.36 EdgA/134.0.3124.51",
+            secChUa = "\"Microsoft Edge\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"Pixel 8\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
+            secChUaModel = "\"Pixel 9 Pro\"",
+            platform = "Linux armv8l",
+            deviceMemory = 16,
+            hardwareConcurrency = 8,
+            screenWidth = 412,
+            screenHeight = 960
+        ),
+        FingerprintPreset(
+            id = "mobile_pixel9pro_chrome134",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; Pixel 9 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.35 Mobile Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?1",
+            secChUaPlatform = "\"Android\"",
+            secChUaModel = "\"Pixel 9 Pro\"",
+            platform = "Linux armv8l",
+            deviceMemory = 16,
+            hardwareConcurrency = 8,
+            screenWidth = 412,
+            screenHeight = 960
+        ),
+        FingerprintPreset(
+            id = "mobile_pixel9_edge133",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36 EdgA/133.0.3065.82",
+            secChUa = "\"Microsoft Edge\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
+            secChUaMobile = "?1",
+            secChUaPlatform = "\"Android\"",
+            secChUaModel = "\"Pixel 9\"",
+            platform = "Linux armv8l",
+            deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 412,
             screenHeight = 915
         ),
         FingerprintPreset(
-            id = "mobile_pixel8_edge126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36 EdgA/126.0.2592.86",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Microsoft Edge\";v=\"126\"",
+            id = "mobile_pixel9_chrome133",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"Pixel 8\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
+            secChUaModel = "\"Pixel 9\"",
+            platform = "Linux armv8l",
+            deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 412,
             screenHeight = 915
         ),
         FingerprintPreset(
-            id = "mobile_pixel7_chrome125",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Google Chrome\";v=\"125\"",
+            id = "mobile_s25_edge134",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.35 Mobile Safari/537.36 EdgA/134.0.3124.51",
+            secChUa = "\"Microsoft Edge\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"Pixel 7\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
+            secChUaModel = "\"SM-S931B\"",
+            platform = "Linux armv8l",
+            deviceMemory = 12,
             hardwareConcurrency = 8,
-            screenWidth = 412,
-            screenHeight = 915
+            screenWidth = 390,
+            screenHeight = 844
         ),
         FingerprintPreset(
-            id = "mobile_pixel7_edge125",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36 EdgA/125.0.2535.88",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Microsoft Edge\";v=\"125\"",
+            id = "mobile_s25_chrome134",
+            userAgent = "Mozilla/5.0 (Linux; Android 15; SM-S931B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.35 Mobile Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"Pixel 7\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
+            secChUaModel = "\"SM-S931B\"",
+            platform = "Linux armv8l",
+            deviceMemory = 12,
             hardwareConcurrency = 8,
-            screenWidth = 412,
-            screenHeight = 915
+            screenWidth = 390,
+            screenHeight = 844
         ),
         FingerprintPreset(
-            id = "mobile_s24ultra_chrome126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"",
+            id = "mobile_s24ultra_edge133",
+            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36 EdgA/133.0.3065.82",
+            secChUa = "\"Microsoft Edge\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
             secChUaModel = "\"SM-S928B\"",
-            platform = "Linux armv81",
+            platform = "Linux armv8l",
             deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 384,
             screenHeight = 832
         ),
         FingerprintPreset(
-            id = "mobile_s24ultra_edge126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36 EdgA/126.0.2592.86",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Microsoft Edge\";v=\"126\"",
+            id = "mobile_s24ultra_chrome133",
+            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
             secChUaModel = "\"SM-S928B\"",
-            platform = "Linux armv81",
+            platform = "Linux armv8l",
             deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 384,
             screenHeight = 832
         ),
         FingerprintPreset(
-            id = "mobile_s23_chrome125",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Google Chrome\";v=\"125\"",
-            secChUaMobile = "?1",
-            secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"SM-S911B\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
-            hardwareConcurrency = 8,
-            screenWidth = 360,
-            screenHeight = 780
-        ),
-        FingerprintPreset(
-            id = "mobile_s23_edge125",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.6422.165 Mobile Safari/537.36 EdgA/125.0.2535.88",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"125\", \"Microsoft Edge\";v=\"125\"",
-            secChUaMobile = "?1",
-            secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"SM-S911B\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
-            hardwareConcurrency = 8,
-            screenWidth = 360,
-            screenHeight = 780
-        ),
-        FingerprintPreset(
-            id = "mobile_xiaomi14_chrome126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; 23127PN0CG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Google Chrome\";v=\"126\"",
+            id = "mobile_xiaomi14_edge134",
+            userAgent = "Mozilla/5.0 (Linux; Android 14; 23127PN0CG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.6998.35 Mobile Safari/537.36 EdgA/134.0.3124.51",
+            secChUa = "\"Microsoft Edge\";v=\"134\", \"Chromium\";v=\"134\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
             secChUaModel = "\"23127PN0CG\"",
-            platform = "Linux armv81",
+            platform = "Linux armv8l",
             deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 393,
             screenHeight = 852
         ),
         FingerprintPreset(
-            id = "mobile_xiaomi14_edge126",
-            userAgent = "Mozilla/5.0 (Linux; Android 14; 23127PN0CG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36 EdgA/126.0.2592.86",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"126\", \"Microsoft Edge\";v=\"126\"",
+            id = "mobile_xiaomi14_chrome133",
+            userAgent = "Mozilla/5.0 (Linux; Android 14; 23127PN0CG) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.6943.122 Mobile Safari/537.36",
+            secChUa = "\"Google Chrome\";v=\"133\", \"Chromium\";v=\"133\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
             secChUaModel = "\"23127PN0CG\"",
-            platform = "Linux armv81",
+            platform = "Linux armv8l",
             deviceMemory = 12,
             hardwareConcurrency = 8,
             screenWidth = 393,
             screenHeight = 852
         ),
+        LOGIN_MOBILE_PRESET,
         FingerprintPreset(
-            id = "mobile_xiaomi13_chrome124",
-            userAgent = "Mozilla/5.0 (Linux; Android 13; 2211133G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.179 Mobile Safari/537.36",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\"",
+            id = "mobile_s24_edge131",
+            userAgent = "Mozilla/5.0 (Linux; Android 14; SM-S921B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36 EdgA/131.0.2903.86",
+            secChUa = "\"Microsoft Edge\";v=\"131\", \"Chromium\";v=\"131\", \"Not?A_Brand\";v=\"99\"",
             secChUaMobile = "?1",
             secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"2211133G\"",
-            platform = "Linux armv81",
+            secChUaModel = "\"SM-S921B\"",
+            platform = "Linux armv8l",
             deviceMemory = 8,
             hardwareConcurrency = 8,
-            screenWidth = 393,
-            screenHeight = 851
-        ),
-        FingerprintPreset(
-            id = "mobile_xiaomi13_edge124",
-            userAgent = "Mozilla/5.0 (Linux; Android 13; 2211133G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.6367.179 Mobile Safari/537.36 EdgA/124.0.2478.105",
-            secChUa = "\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"124\", \"Microsoft Edge\";v=\"124\"",
-            secChUaMobile = "?1",
-            secChUaPlatform = "\"Android\"",
-            secChUaModel = "\"2211133G\"",
-            platform = "Linux armv81",
-            deviceMemory = 8,
-            hardwareConcurrency = 8,
-            screenWidth = 393,
-            screenHeight = 851
+            screenWidth = 360,
+            screenHeight = 780
         )
     )
 
@@ -359,6 +372,41 @@ object FingerprintEngine {
     }
 
     /**
+     * Triệt tiêu cờ X-Requested-With ở tầng AndroidX WebKit native (Tầng 1).
+     * Sử dụng Reflection an toàn để tương thích 100% với Pure SDK Kotlinc CLI và AndroidX WebKit.
+     * Ngăn chặn WebView tự động gửi header tên package của ứng dụng lên máy chủ Microsoft.
+     */
+    fun stripXRequestedWith(webView: WebView) {
+        try {
+            val featureClass = Class.forName("androidx.webkit.WebViewFeature")
+            val isSupportedMethod = featureClass.getMethod("isFeatureSupported", String::class.java)
+            val isSupported = isSupportedMethod.invoke(null, "REQUESTED_WITH_HEADER_ALLOW_LIST") as? Boolean
+            if (isSupported == true) {
+                val compatClass = Class.forName("androidx.webkit.WebSettingsCompat")
+                val setAllowListMethod = compatClass.getMethod(
+                    "setRequestedWithHeaderOriginAllowList",
+                    android.webkit.WebSettings::class.java,
+                    java.util.Set::class.java
+                )
+                setAllowListMethod.invoke(null, webView.settings, emptySet<String>())
+                Log.d("FingerprintEngine", "Đã cấu hình setRequestedWithHeaderOriginAllowList(emptySet)")
+            }
+        } catch (_: Throwable) {
+            // Thiết bị hoặc môi trường runtime không có WebKit Compat, tự động fallback sang Tầng 2 & Tầng 3
+        }
+    }
+
+    /**
+     * Lọc bỏ header X-Requested-With khỏi header map (Tầng 2).
+     */
+    fun sanitizeHeaders(headers: Map<String, String>?): Map<String, String> {
+        if (headers == null) return emptyMap()
+        return headers.filterKeys { !it.equals("X-Requested-With", ignoreCase = true) }
+    }
+
+    private val BRAND_REGEX = Regex("\"?([^\"]+)\"?;v=\"?([^\"]+)\"?")
+
+    /**
      * Chuyển đổi định dạng sec-ch-ua thành mảng JSON đối tượng [{brand, version}].
      */
     private fun parseBrandsToJson(secChUa: String): String {
@@ -366,7 +414,7 @@ object FingerprintEngine {
         val sb = StringBuilder("[")
         for (part in parts) {
             val trimmed = part.trim()
-            val match = Regex("\"?([^\"]+)\"?;v=\"?([^\"]+)\"?").find(trimmed)
+            val match = BRAND_REGEX.find(trimmed)
             if (match != null) {
                 val brand = match.groupValues[1]
                 val ver = match.groupValues[2]
@@ -375,12 +423,13 @@ object FingerprintEngine {
             }
         }
         sb.append("]")
-        return if (sb.length > 2) sb.toString() else "[{\"brand\":\"Chromium\",\"version\":\"126\"}]"
+        return if (sb.length > 2) sb.toString() else "[{\"brand\":\"Microsoft Edge\",\"version\":\"133\"}]"
     }
 
     /**
      * Sinh kịch bản JavaScript tiêm vào WebView để ghi đè navigator.userAgentData,
-     * navigator.platform, navigator.webdriver, hardwareConcurrency, deviceMemory và screen specs.
+     * navigator.platform, navigator.webdriver, hardwareConcurrency, deviceMemory, screen specs,
+     * và triệt tiêu header X-Requested-With trong XMLHttpRequest và Fetch API.
      */
     fun createStealthScript(preset: FingerprintPreset, isDesktop: Boolean): String {
         val brandsJson = parseBrandsToJson(preset.secChUa)
@@ -388,100 +437,219 @@ object FingerprintEngine {
         val modelStr = preset.secChUaModel.replace("\"", "")
         val isMobileBool = preset.secChUaMobile.contains("1")
         val appVersion = preset.userAgent.removePrefix("Mozilla/")
+        val platformVersion = when {
+            isDesktop && (preset.secChUaPlatform.contains("Windows") || preset.secChUaPlatform.contains("macOS")) -> "15.0.0"
+            preset.userAgent.contains("Android 15") -> "15.0.0"
+            else -> "14.0.0"
+        }
 
         return """
             (function() {
                 try {
+                    // ═══ 0. Native Cloaking Engine ([native code] spoofing) ═══
+                    var nativeRegistry = new WeakMap();
+                    var origToString = Function.prototype.toString;
+                    function cloak(fn, name, length) {
+                        if (typeof fn !== 'function') return fn;
+                        nativeRegistry.set(fn, 'function ' + (name || '') + '() { [native code] }');
+                        try {
+                            Object.defineProperty(fn, 'name', { value: name || '', configurable: true });
+                            Object.defineProperty(fn, 'length', { value: length || 0, configurable: true });
+                        } catch (e) {}
+                        return fn;
+                    }
+                    var patchedToString = function toString() {
+                        if (this && nativeRegistry.has(this)) {
+                            return nativeRegistry.get(this);
+                        }
+                        return origToString.apply(this, arguments);
+                    };
+                    nativeRegistry.set(patchedToString, 'function toString() { [native code] }');
+                    try {
+                        Object.defineProperty(Function.prototype, 'toString', {
+                            value: patchedToString,
+                            configurable: true,
+                            writable: true
+                        });
+                    } catch (e) {
+                        Function.prototype.toString = patchedToString;
+                    }
+
                     // 1. Vô hiệu hóa navigator.webdriver
                     try {
+                        var getWebdriver = cloak(function() { return undefined; }, 'get webdriver', 0);
                         Object.defineProperty(navigator, 'webdriver', {
-                            get: function() { return undefined; },
+                            get: getWebdriver,
                             configurable: true
                         });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'webdriver', {
+                                get: getWebdriver,
+                                configurable: true
+                            });
+                        }
                     } catch (e1) {}
 
                     // 2. Ghi đè navigator.platform
                     try {
+                        var getPlatform = cloak(function() { return '${preset.platform}'; }, 'get platform', 0);
                         Object.defineProperty(navigator, 'platform', {
-                            get: function() { return '${preset.platform}'; },
+                            get: getPlatform,
                             configurable: true
                         });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'platform', {
+                                get: getPlatform,
+                                configurable: true
+                            });
+                        }
                     } catch (e2) {}
 
                     // 3. Ghi đè phần cứng (hardwareConcurrency & deviceMemory)
                     try {
+                        var getHw = cloak(function() { return ${preset.hardwareConcurrency}; }, 'get hardwareConcurrency', 0);
+                        var getMem = cloak(function() { return ${preset.deviceMemory}; }, 'get deviceMemory', 0);
                         Object.defineProperty(navigator, 'hardwareConcurrency', {
-                            get: function() { return ${preset.hardwareConcurrency}; },
+                            get: getHw,
                             configurable: true
                         });
                         Object.defineProperty(navigator, 'deviceMemory', {
-                            get: function() { return ${preset.deviceMemory}; },
+                            get: getMem,
                             configurable: true
                         });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'hardwareConcurrency', {
+                                get: getHw,
+                                configurable: true
+                            });
+                            Object.defineProperty(Navigator.prototype, 'deviceMemory', {
+                                get: getMem,
+                                configurable: true
+                            });
+                        }
                     } catch (e3) {}
 
                     // 4. Ghi đè kích thước màn hình
                     try {
-                        Object.defineProperty(screen, 'width', { get: function() { return ${preset.screenWidth}; }, configurable: true });
-                        Object.defineProperty(screen, 'height', { get: function() { return ${preset.screenHeight}; }, configurable: true });
-                        Object.defineProperty(screen, 'availWidth', { get: function() { return ${preset.screenWidth}; }, configurable: true });
-                        Object.defineProperty(screen, 'availHeight', { get: function() { return ${preset.screenHeight}; }, configurable: true });
+                        var getW = cloak(function() { return ${preset.screenWidth}; }, 'get width', 0);
+                        var getH = cloak(function() { return ${preset.screenHeight}; }, 'get height', 0);
+                        Object.defineProperty(screen, 'width', { get: getW, configurable: true });
+                        Object.defineProperty(screen, 'height', { get: getH, configurable: true });
+                        Object.defineProperty(screen, 'availWidth', { get: getW, configurable: true });
+                        Object.defineProperty(screen, 'availHeight', { get: getH, configurable: true });
+                        if (typeof Screen !== 'undefined' && Screen.prototype) {
+                            Object.defineProperty(Screen.prototype, 'width', { get: getW, configurable: true });
+                            Object.defineProperty(Screen.prototype, 'height', { get: getH, configurable: true });
+                            Object.defineProperty(Screen.prototype, 'availWidth', { get: getW, configurable: true });
+                            Object.defineProperty(Screen.prototype, 'availHeight', { get: getH, configurable: true });
+                        }
                     } catch (e4) {}
 
                     // 5. Ghi đè userAgent & appVersion
                     try {
+                        var getUa = cloak(function() { return '${preset.userAgent}'; }, 'get userAgent', 0);
+                        var getAppVer = cloak(function() { return '$appVersion'; }, 'get appVersion', 0);
                         Object.defineProperty(navigator, 'userAgent', {
-                            get: function() { return '${preset.userAgent}'; },
+                            get: getUa,
                             configurable: true
                         });
                         Object.defineProperty(navigator, 'appVersion', {
-                            get: function() { return '$appVersion'; },
+                            get: getAppVer,
                             configurable: true
                         });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'userAgent', {
+                                get: getUa,
+                                configurable: true
+                            });
+                            Object.defineProperty(Navigator.prototype, 'appVersion', {
+                                get: getAppVer,
+                                configurable: true
+                            });
+                        }
                     } catch (e5) {}
 
-                    // 6. Ghi đè navigator.userAgentData (Client Hints)
+                    // 6. Ghi đè navigator.userAgentData (Client Hints) & triệt tiêu hoàn toàn "Android WebView"
                     try {
-                        var brandsList = $brandsJson;
+                        var rawBrands = $brandsJson;
+                        // Loại bỏ triệt để mọi brand chứa "WebView" hoặc "Android WebView"
+                        var cleanBrands = rawBrands.filter(function(b) {
+                            return b && b.brand && b.brand.indexOf('WebView') === -1;
+                        });
+                        if (cleanBrands.length === 0) {
+                            cleanBrands = [
+                                { brand: 'Microsoft Edge', version: '133' },
+                                { brand: 'Chromium', version: '133' },
+                                { brand: 'Not?A_Brand', version: '99' }
+                            ];
+                        }
+                        var brandsList = Object.freeze(cleanBrands.map(function(item) {
+                            return Object.freeze({ brand: item.brand, version: item.version });
+                        }));
+
+                        var getHighEntropyValuesFn = cloak(function getHighEntropyValues(hints) {
+                            return Promise.resolve({
+                                brands: brandsList,
+                                mobile: $isMobileBool,
+                                platform: '$platformStr',
+                                platformVersion: '$platformVersion',
+                                architecture: '${if (isDesktop) "x86" else "arm"}',
+                                model: '$modelStr',
+                                bitness: '64',
+                                uaFullVersion: '${preset.userAgent.substringAfter("Chrome/").substringBefore(" ")}'
+                            });
+                        }, 'getHighEntropyValues', 1);
+
+                        var toJSONFn = cloak(function toJSON() {
+                            return {
+                                brands: brandsList,
+                                mobile: $isMobileBool,
+                                platform: '$platformStr'
+                            };
+                        }, 'toJSON', 0);
+
                         var uaData = {
                             brands: brandsList,
                             mobile: $isMobileBool,
                             platform: '$platformStr',
-                            getHighEntropyValues: function(hints) {
-                                return Promise.resolve({
-                                    brands: brandsList,
-                                    mobile: $isMobileBool,
-                                    platform: '$platformStr',
-                                    platformVersion: '${if (isDesktop) "15.0.0" else "14.0.0"}',
-                                    architecture: '${if (isDesktop) "x86" else "arm"}',
-                                    model: '$modelStr',
-                                    bitness: '64',
-                                    uaFullVersion: '${preset.userAgent.substringAfter("Chrome/").substringBefore(" ")}'
-                                });
-                            },
-                            toJSON: function() {
-                                return {
-                                    brands: brandsList,
-                                    mobile: $isMobileBool,
-                                    platform: '$platformStr'
-                                };
-                            }
+                            getHighEntropyValues: getHighEntropyValuesFn,
+                            toJSON: toJSONFn
                         };
 
-                        if (navigator.userAgentData) {
-                            Object.defineProperty(navigator, 'userAgentData', {
-                                get: function() { return uaData; },
-                                configurable: true
-                            });
-                        } else {
+                        var getUaData = cloak(function() { return uaData; }, 'get userAgentData', 0);
+
+                        Object.defineProperty(navigator, 'userAgentData', {
+                            get: getUaData,
+                            configurable: true,
+                            enumerable: true
+                        });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
                             Object.defineProperty(Navigator.prototype, 'userAgentData', {
-                                get: function() { return uaData; },
-                                configurable: true
+                                get: getUaData,
+                                configurable: true,
+                                enumerable: true
                             });
                         }
                     } catch (e6) {}
 
-                    // 7. Bảo vệ đối tượng window.chrome
+                    // 7. Bảo vệ maxTouchPoints trên Mobile
+                    ${if (!isDesktop) """
+                    try {
+                        var getTouch = cloak(function() { return 10; }, 'get maxTouchPoints', 0);
+                        Object.defineProperty(navigator, 'maxTouchPoints', {
+                            get: getTouch,
+                            configurable: true
+                        });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'maxTouchPoints', {
+                                get: getTouch,
+                                configurable: true
+                            });
+                        }
+                    } catch (eTouch) {}
+                    """.trimIndent() else ""}
+
+                    // 8. Bảo vệ đối tượng window.chrome
                     try {
                         if (!window.chrome) {
                             window.chrome = {
@@ -491,27 +659,64 @@ object FingerprintEngine {
                         }
                     } catch (e7) {}
 
-                    // 8. Giả lập hiển thị Foreground (document.visibilityState & document.hidden)
+                    // 9. Giả lập hiển thị Foreground (document.visibilityState & document.hidden)
                     try {
+                        var getVis = cloak(function() { return 'visible'; }, 'get visibilityState', 0);
+                        var getHidden = cloak(function() { return false; }, 'get hidden', 0);
                         Object.defineProperty(document, 'visibilityState', {
-                            get: function() { return 'visible'; },
+                            get: getVis,
                             configurable: true
                         });
                         Object.defineProperty(document, 'hidden', {
-                            get: function() { return false; },
+                            get: getHidden,
                             configurable: true
                         });
-                        Object.defineProperty(Document.prototype, 'visibilityState', {
-                            get: function() { return 'visible'; },
-                            configurable: true
-                        });
-                        Object.defineProperty(Document.prototype, 'hidden', {
-                            get: function() { return false; },
-                            configurable: true
-                        });
+                        if (typeof Document !== 'undefined' && Document.prototype) {
+                            Object.defineProperty(Document.prototype, 'visibilityState', {
+                                get: getVis,
+                                configurable: true
+                            });
+                            Object.defineProperty(Document.prototype, 'hidden', {
+                                get: getHidden,
+                                configurable: true
+                            });
+                        }
                         window.dispatchEvent(new Event('focus'));
                         document.dispatchEvent(new Event('visibilitychange'));
                     } catch (e8) {}
+
+                    // 10. Triệt tiêu cờ X-Requested-With trong XMLHttpRequest và fetch (Tầng 3) kèm Native Cloaking
+                    try {
+                        var origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
+                        var patchedSetRequestHeader = function setRequestHeader(header, value) {
+                            if (header && typeof header === 'string' && header.toLowerCase() === 'x-requested-with') {
+                                return;
+                            }
+                            return origSetRequestHeader.apply(this, arguments);
+                        };
+                        cloak(patchedSetRequestHeader, 'setRequestHeader', 2);
+                        XMLHttpRequest.prototype.setRequestHeader = patchedSetRequestHeader;
+                    } catch (e9) {}
+
+                    try {
+                        if (window.fetch) {
+                            var origFetch = window.fetch;
+                            var patchedFetch = function fetch(resource, init) {
+                                if (init && init.headers) {
+                                    if (typeof Headers !== 'undefined' && init.headers instanceof Headers) {
+                                        init.headers.delete('X-Requested-With');
+                                        init.headers.delete('x-requested-with');
+                                    } else if (typeof init.headers === 'object') {
+                                        delete init.headers['X-Requested-With'];
+                                        delete init.headers['x-requested-with'];
+                                    }
+                                }
+                                return origFetch.apply(this, arguments);
+                            };
+                            cloak(patchedFetch, 'fetch', 2);
+                            window.fetch = patchedFetch;
+                        }
+                    } catch (e10) {}
                 } catch (globalErr) {}
             })();
         """.trimIndent()

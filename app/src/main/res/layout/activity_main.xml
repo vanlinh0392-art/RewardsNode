@@ -18,15 +18,17 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
-        <!-- Bottom Navigation Bar (Floating Dock ôm sát đáy) -->
+        <!-- Bottom Navigation Bar (Edge-to-Edge ôm khít sát đáy màn hình) -->
         <LinearLayout
             android:id="@+id/bottomBar"
             android:layout_width="match_parent"
-            android:layout_height="56dp"
-            android:layout_marginHorizontal="10dp"
-            android:layout_marginBottom="2dp"
+            android:layout_height="wrap_content"
+            android:minHeight="54dp"
+            android:layout_marginHorizontal="0dp"
+            android:layout_marginBottom="0dp"
+            android:paddingBottom="2dp"
             android:orientation="horizontal"
-            android:background="@drawable/bg_floating_dock"
+            android:background="@drawable/bg_bottom_nav_bar"
             android:elevation="8dp"
             android:baselineAligned="false">
 

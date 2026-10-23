@@ -62,6 +62,23 @@
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
 
+                    <!-- Point History Menu Button -->
+                    <Button
+                        android:id="@+id/btnVlogPointHistory"
+                        android:layout_width="wrap_content"
+                        android:layout_height="28dp"
+                        android:layout_marginEnd="6dp"
+                        android:background="@drawable/bg_pill_dark"
+                        android:minWidth="0dp"
+                        android:minHeight="0dp"
+                        android:paddingHorizontal="10dp"
+                        android:paddingVertical="0dp"
+                        android:stateListAnimator="@null"
+                        android:text="🏆 Lịch sử điểm"
+                        android:textColor="#10B981"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
                     <!-- Export Vlog Button (36x36dp) -->
                     <ImageButton
                         android:id="@+id/btnExportVlog"
@@ -141,6 +158,23 @@
                     android:stateListAnimator="@null"
                     android:text="Tất cả"
                     android:textColor="@color/pill_all"
+                    android:textSize="10sp"
+                    android:textStyle="bold" />
+
+                <!-- 1.5. POINT Filter (26dp) -->
+                <Button
+                    android:id="@+id/btnFilterPoint"
+                    android:layout_width="wrap_content"
+                    android:layout_height="26dp"
+                    android:layout_marginEnd="6dp"
+                    android:background="@drawable/bg_pill_net"
+                    android:minWidth="0dp"
+                    android:minHeight="26dp"
+                    android:paddingHorizontal="10dp"
+                    android:paddingVertical="0dp"
+                    android:stateListAnimator="@null"
+                    android:text="🏆 Điểm"
+                    android:textColor="#10B981"
                     android:textSize="10sp"
                     android:textStyle="bold" />
 
@@ -258,6 +292,31 @@
         </LinearLayout>
 
     </LinearLayout>
+
+    <!-- Scroll to Top FAB Container -->
+    <FrameLayout
+        android:id="@+id/fabScrollTop"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_marginEnd="16dp"
+        android:layout_marginBottom="68dp"
+        android:clickable="true"
+        android:focusable="true">
+
+        <ImageButton
+            android:id="@+id/btnScrollTopInner"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_fab_circle"
+            android:contentDescription="Cuộn lên trên cùng"
+            android:elevation="6dp"
+            android:padding="10dp"
+            android:rotation="180"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_arrow_down" />
+
+    </FrameLayout>
 
     <!-- Scroll to Bottom FAB Container with New Logs Badge -->
     <FrameLayout

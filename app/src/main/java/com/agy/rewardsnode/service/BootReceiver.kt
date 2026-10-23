@@ -22,6 +22,8 @@ class BootReceiver : BroadcastReceiver() {
                 } else {
                     context.startService(serviceIntent)
                 }
+            } else if (prefs.isAutoDailySchedule) {
+                RewardsForegroundService.scheduleDailyAlarm(context)
             }
         }
     }

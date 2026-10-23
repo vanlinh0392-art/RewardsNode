@@ -17,7 +17,29 @@
     <item name="tvBasketPc" type="id" />
     <item name="tvBasketMobile" type="id" />
     <item name="tvBasketEdge" type="id" />
+    <item name="tvBasketNews" type="id" />
+    <item name="tvBasketDailyPromo" type="id" />
+    <item name="cardDualCountdown" type="id" />
+    <item name="tvTimerReset" type="id" />
+    <item name="tvTimerResetSub" type="id" />
+    <item name="tvTimerCooldown" type="id" />
+    <item name="tvTimerCooldownSub" type="id" />
+    <item name="tvCountdownStatusBadge" type="id" />
+    <item name="btnQuickCooldown" type="id" />
+    <item name="btnQuickProxy" type="id" />
+    <item name="btnHeaderBackup" type="id" />
+    <item name="btnHeaderRestore" type="id" />
+    <item name="cardDynamicTasks" type="id" />
+    <item name="llDynamicTasksContainer" type="id" />
+    <item name="tvEmptyDynamicTasks" type="id" />
+    <item name="tvTasksBadge" type="id" />
     <item name="tvAccountProgress" type="id" />
     <item name="tvAccountProxy" type="id" />
     <item name="rootItemAccount" type="id" />
+    <item name="cardActiveNodeTelemetry" type="id" />
+    <item name="btnEmergencyReset" type="id" />
+    <item name="btnHealthCheck" type="id" />
+    <item name="btnVaultBackup" type="id" />
+    <item name="btnVaultRestore" type="id" />
+    <item name="btnForensicShred" type="id" />
 </resources>
