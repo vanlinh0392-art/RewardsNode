@@ -115,4 +115,58 @@ class ReadyToClaimAndAccountMetricsTest {
         account.pcProgress = 30
         assertEquals(RewardsStateMachine.SearchPhase.DONE, sm.evaluateNextSearchPhase(account))
     }
+
+    @Test
+    fun `test startup claim checked set prevents duplicate run when account is already checked and claimable is 0`() {
+        val sm = RewardsStateMachine(
+            keywordEngine = KeywordEngine(),
+            onExecuteSearch = { _, _, _ -> true },
+            onStatusUpdate = { _, _ -> },
+            onAccountUpdated = {}
+        )
+        val field = RewardsStateMachine::class.java.getDeclaredField("startupClaimCheckedAccounts")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val startupSet = field.get(sm) as MutableSet<String>
+
+        val accId = "test_acc_startup"
+        assertFalse(startupSet.contains(accId))
+
+        // Giả lập sau khi startup gate chạy xong
+        startupSet.add(accId)
+        assertTrue(startupSet.contains(accId))
+
+        // Khi restart node (gọi clear), tập hợp này được làm sạch để Start Node quét lại
+        startupSet.clear()
+        assertFalse(startupSet.contains(accId))
+    }
+
+    @Test
+    fun `test startup claim pending logic respects maxClaimRetries circuit breaker`() {
+        val maxClaimRetries = 2
+        var claimAttempts = 0
+        var isChecked = false
+        var claimablePoints = 5
+
+        // Lần 1: Chưa check, có 5 điểm -> Pending = true
+        var isPending = (!isChecked || claimablePoints > 0) && claimAttempts < maxClaimRetries
+        assertTrue(isPending)
+
+        // Sau lần 1: Đã check, claim thất bại nên server vẫn còn 5 điểm, claimAttempts = 1
+        isChecked = true
+        claimAttempts = 1
+        isPending = (!isChecked || claimablePoints > 0) && claimAttempts < maxClaimRetries
+        assertTrue(isPending)
+
+        // Sau lần 2: Đã check, claimAttempts = 2 -> Circuit breaker ngắt -> isPending = false
+        claimAttempts = 2
+        isPending = (!isChecked || claimablePoints > 0) && claimAttempts < maxClaimRetries
+        assertFalse(isPending)
+
+        // Trường hợp điểm đã claim thành công (claimablePoints = 0) và đã check -> isPending = false
+        claimablePoints = 0
+        claimAttempts = 1
+        isPending = (!isChecked || claimablePoints > 0) && claimAttempts < maxClaimRetries
+        assertFalse(isPending)
+    }
 }

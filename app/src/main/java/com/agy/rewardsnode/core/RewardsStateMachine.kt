@@ -93,6 +93,8 @@ class RewardsStateMachine(
     private val phaseZeroDeltaCountMap = ConcurrentHashMap<String, ConcurrentHashMap<SearchPhase, Int>>()
     // Bảng đếm số lần thử claim Ready-to-Claim trong ngày của từng tài khoản (tối đa maxClaimRetries lần/ngày chống lặp vô tận)
     private val claimAttemptCountMap = ConcurrentHashMap<String, Int>()
+    // Tập hợp tài khoản đã được kiểm tra Ready-to-Claim khi khởi động phiên (Start Node)
+    private val startupClaimCheckedAccounts = Collections.synchronizedSet(mutableSetOf<String>())
     // Bảng đếm số lần thử lấy DAPI token trong ngày của từng tài khoản (tối đa dapiMaxRetries lần/ngày chống lặp vô tận)
     private val dapiAttemptCountMap = ConcurrentHashMap<String, Int>()
     // Bảng dự phòng trong RAM cho số lần thử từng offer trong ngày khi encryptedPrefs == null
@@ -699,6 +701,7 @@ class RewardsStateMachine(
         isRunning = true
         sessionFullBasketsMap.clear()
         sessionRecheckCountMap.clear()
+        startupClaimCheckedAccounts.clear()
         if (webView != null) {
             activeWebView = webView
         }
@@ -1021,10 +1024,11 @@ class RewardsStateMachine(
                         (latestBalance != null && areAllDailySetOffersExhausted(account.id, extractDailySetSubset(latestBalance.dailyTasks), todayStr))
                     val claimablePoints = latestBalance?.claimablePoints ?: account.claimablePoints
                     val claimAttemptsToday = claimAttemptCountMap["$todayStr:${account.id}"] ?: 0
+                    val isStartupClaimPending = (!startupClaimCheckedAccounts.contains(account.id) || claimablePoints > 0) && claimAttemptsToday < maxOf(1, maxClaimRetries)
                     val canAttemptClaim = claimablePoints > 0 && claimAttemptsToday < maxOf(1, maxClaimRetries)
                     val isDapiDone = isDapiPhaseDoneForAccount(account, todayStr)
                     val isBingAppDone = isBingApp60Of60Done(account, todayStr)
-                    val isActDone = (dailySetDone && !canAttemptClaim && isDapiDone) || isBingAppDone
+                    val isActDone = ((dailySetDone && !canAttemptClaim && isDapiDone) || isBingAppDone) && !isStartupClaimPending
 
                     val nextSearchPhase = evaluateNextSearchPhase(account)
                     val isSearchDone = nextSearchPhase == SearchPhase.DONE
@@ -1094,6 +1098,36 @@ class RewardsStateMachine(
                         } else {
                             vlogManager?.logError("Lỗi hoán đổi Session", "Không thể hoán đổi session cho ${account.email} trong thời gian quy định.", account.email)
                             continue
+                        }
+                    }
+
+                    // =========================================================================
+                    // GATE 0.1: PRE-FLIGHT READY TO CLAIM (CHẠY NGAY MỖI LẦN START NODE)
+                    // Độc lập 100% với Bing App 60/60 và Daily Set
+                    // =========================================================================
+                    val currentClaimable = latestBalanceMap[account.id]?.claimablePoints.takeIf { (it ?: 0) > 0 } ?: account.claimablePoints
+                    val claimKey = "$todayStr:${account.id}"
+                    val claimAttempts = claimAttemptCountMap[claimKey] ?: 0
+                    val isStartupClaimNeedRun = (!startupClaimCheckedAccounts.contains(account.id) || currentClaimable > 0) && claimAttempts < maxOf(1, maxClaimRetries)
+
+                    if (targetWebView != null && isStartupClaimNeedRun && isRunning && isActive) {
+                        try {
+                            startupClaimCheckedAccounts.add(account.id)
+                            wakeLockHelper?.acquire("StartupClaim_${account.id}")
+                            withContext(AndroidMainDispatcher) {
+                                val preset = FingerprintEngine.getEdgePresetForAccount(account.id, false)
+                                targetWebView.settings.userAgentString = preset.userAgent
+                            }
+                            vlogManager?.logPoints(
+                                "[STARTUP-CLAIM] Kiểm tra Ready to Claim lúc khởi động cho ${account.email}",
+                                if (currentClaimable > 0) "Phát hiện +$currentClaimable điểm thưởng chờ nhận. Mở ?modal=pointsclaim..."
+                                else "Quét quà thưởng định kỳ lúc Start Node...",
+                                account.email
+                            )
+                            executeTwoStepPointClaim(targetWebView, account)
+                        } catch (e: Exception) {
+                            if (e is kotlinx.coroutines.CancellationException) throw e
+                            vlogManager?.logNetwork("Lỗi kiểm tra Ready to Claim lúc khởi động", e.message, account.email)
                         }
                     }
 
