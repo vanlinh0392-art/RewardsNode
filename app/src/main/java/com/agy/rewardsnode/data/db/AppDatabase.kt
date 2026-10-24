@@ -427,6 +427,9 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                     readProgress = 0,
                     dailySetProgress = 0,
                     dailySetDone = 0,
+                    searchWindowStartMs = 0,
+                    searchesInWindow = 0,
+                    cooldownUntilTimestamp = 0,
                     baselinePointsToday = CASE WHEN availablePoints > 0 THEN availablePoints ELSE totalPoints END 
                 WHERE lastActiveDate != ?
                 """.trimIndent(),

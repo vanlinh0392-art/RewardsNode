@@ -1742,16 +1742,30 @@ class RewardsStateMachine(
                         )
                         continue
                     } else {
+                        // Proactive Cooldown Avoidance: Kiểm tra Token Bucket 3 searches / window 920s
+                        val nowMs = System.currentTimeMillis()
+                        if (!SearchTokenBucketEngine.canExecuteSearch(account, nowMs)) {
+                            val waitMs = SearchTokenBucketEngine.getRemainingCooldownMs(account, nowMs)
+                            earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, account.cooldownUntilTimestamp)
+                            vlogManager?.logCooldown(
+                                "[TOKEN-COOLDOWN] Tài khoản ${account.email} đã đạt trần ${account.searchesInWindow}/3 searches trong window 15m",
+                                "Còn chờ ${waitMs / 1000L}s. Nhường slot sang tài khoản kế tiếp (Round-Robin Interleaving).",
+                                account.email
+                            )
+                            continue
+                        }
+
                         val effectiveTarget = if (isCatchingUp) maxCatchUpSearches else account.targetSearches
                         val remainingSearches = effectiveTarget - account.completedSearchesToday
-                        val searchesInThisBatch = if (activePhase == SearchPhase.PHASE_2_MOBILE && isMobilePendingL2) {
+                        val tokenQuotaInWindow = maxOf(1, SearchTokenBucketEngine.MAX_SEARCHES_PER_WINDOW - account.searchesInWindow)
+                        val searchesInThisBatch = minOf(tokenQuotaInWindow, if (activePhase == SearchPhase.PHASE_2_MOBILE && isMobilePendingL2) {
                             val effMobMax = if (account.mobileMax > 0) account.mobileMax else 60
                             val mobRemainingPoints = effMobMax - account.mobileProgress
                             val mobRemainingSearches = maxOf(1, (mobRemainingPoints + 2) / 3)
                             minOf(batchSize, mobRemainingSearches)
                         } else {
                             minOf(batchSize, remainingSearches)
-                        }
+                        })
 
                         if (searchesInThisBatch > 0) {
                             for (i in 1..searchesInThisBatch) {
@@ -1787,6 +1801,7 @@ class RewardsStateMachine(
                                     successfulSearchesInBatch++
                                     account.completedSearchesToday++
                                     account.lastActiveDate = todayStr
+                                    SearchTokenBucketEngine.recordSearch(account)
                                     if (!proxy.isNullOrBlank()) {
                                         profileManager?.recordProxySuccess(proxy)
                                     }
@@ -2390,6 +2405,7 @@ class RewardsStateMachine(
                     passSearchesExecuted++
                     account.completedSearchesToday++
                     account.lastActiveDate = todayStr
+                    SearchTokenBucketEngine.recordSearch(account)
                     onAccountUpdated(account)
                 }
 

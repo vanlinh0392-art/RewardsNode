@@ -77,10 +77,12 @@ class SearchTokenBucketEngineTest {
         for (i in 1..3) {
             SearchTokenBucketEngine.recordSearch(account, t0 + (i * 10000L))
         }
-        assertFalse(SearchTokenBucketEngine.canExecuteSearch(account, t0 + 50000L))
+        val windowStart = account.searchWindowStartMs
+        assertEquals(t0 + 10000L, windowStart)
+        assertFalse(SearchTokenBucketEngine.canExecuteSearch(account, windowStart + 50000L))
 
-        // Thời điểm t1 sau 920s + 1ms (đã hết Cooldown)
-        val t1 = t0 + SearchTokenBucketEngine.WINDOW_DURATION_MS + 1L
+        // Thời điểm t1 sau 920s + 1ms tính từ windowStart (đã hết Cooldown)
+        val t1 = windowStart + SearchTokenBucketEngine.WINDOW_DURATION_MS + 1L
         val canSearchAfterCooldown = SearchTokenBucketEngine.canExecuteSearch(account, t1)
         assertTrue("Sau khi hết 920s phải tự động reset window và cho phép tìm kiếm", canSearchAfterCooldown)
         assertEquals("Mốc windowStartMs mới phải là t1", t1, account.searchWindowStartMs)
