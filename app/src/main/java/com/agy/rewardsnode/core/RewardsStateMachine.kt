@@ -165,8 +165,17 @@ class RewardsStateMachine(
         if (checkInDone && readDone) return true
         val maxRetries = maxOf(1, dapiMaxRetries)
         if (getDapiAttempts(account.id, todayStr) >= maxRetries) return true
-        val hasDapiCredentials = !account.dapiRefreshToken.isNullOrBlank() || !account.dapiAccessToken.isNullOrBlank()
-        return isPhase05CompletedToday(account.id, todayStr) && !hasDapiCredentials
+        return isPhase05CompletedToday(account.id, todayStr)
+    }
+
+    /**
+     * Kiểm tra trạng thái hoàn thành toàn diện 60/60 điểm Bing App:
+     * - Daily Set (30đ): account.dailySetDone || phase0CompletedDateMap[account.id] == todayStr
+     * - MSN Read to Earn (30đ): account.readProgress >= 30 || phase05CompletedDateMap[account.id] == todayStr
+     */
+    fun isBingApp60Of60Done(account: AccountProfile, todayStr: String): Boolean {
+        return (account.dailySetDone || phase0CompletedDateMap[account.id] == todayStr) &&
+            (account.readProgress >= 30 || phase05CompletedDateMap[account.id] == todayStr)
     }
 
     private fun extractDailySetSubset(tasks: List<DailyTask>): List<DailyTask> {
@@ -1014,7 +1023,8 @@ class RewardsStateMachine(
                     val claimAttemptsToday = claimAttemptCountMap["$todayStr:${account.id}"] ?: 0
                     val canAttemptClaim = claimablePoints > 0 && claimAttemptsToday < maxOf(1, maxClaimRetries)
                     val isDapiDone = isDapiPhaseDoneForAccount(account, todayStr)
-                    val isActDone = dailySetDone && !canAttemptClaim && isDapiDone
+                    val isBingAppDone = isBingApp60Of60Done(account, todayStr)
+                    val isActDone = (dailySetDone && !canAttemptClaim && isDapiDone) || isBingAppDone
 
                     val nextSearchPhase = evaluateNextSearchPhase(account)
                     val isSearchDone = nextSearchPhase == SearchPhase.DONE
@@ -1088,11 +1098,13 @@ class RewardsStateMachine(
                     }
 
                     // 0. PHASE 0: PRE-SEARCH ACTIVITIES (Ready to Claim, Daily Set, Streak Protection)
+                    val isBingAppDoneAt0 = isBingApp60Of60Done(account, todayStr)
                     val isPhase0Needed = (phase0CompletedDateMap[account.id] != todayStr) || canAttemptClaim
-                    if (isActDone) {
+                    if (isBingAppDoneAt0 || isActDone) {
                         vlogManager?.logPoints(
                             "[SKIP-ACT] Bỏ qua Phase 0 (Pre-Search Activities)",
-                            "Tài khoản ${account.email} đã xong Daily Set và claimablePoints == 0",
+                            if (isBingAppDoneAt0) "Tài khoản ${account.email} đã hoàn thành trọn vẹn Bing App 60/60 điểm hôm nay (Daily Set & MSN Read to Earn)"
+                            else "Tài khoản ${account.email} đã xong Daily Set và claimablePoints == 0",
                             account.email
                         )
                         phase0CompletedDateMap[account.id] = todayStr
@@ -1220,6 +1232,7 @@ class RewardsStateMachine(
                                             task.taskType.equals("poll", ignoreCase = true) ||
                                                 task.destinationUrl.contains("btoption", ignoreCase = true)
                                             )
+                                        val isDomTask = isQuizTask || isPollTask || RewardsActivitiesEngine.isInteractiveDomTask(task)
 
                                         onStatusUpdate("Tài khoản: ${account.email}", "[Phase 0] Giải Daily Set: ${task.title} (+${task.pointValue}đ)")
                                         vlogManager?.logPoints(
@@ -1228,57 +1241,80 @@ class RewardsStateMachine(
                                             account.email
                                         )
 
-                                        val taskSuccess: Boolean
+                                        var taskSuccess = false
 
-                                        // A. Ưu tiên gọi reportactivity POST API chính thống; nếu chưa được xác nhận cộng điểm thì chạy đồng thời Redirect + WebView
-                                        if (task.taskType.lowercase(Locale.ROOT) == "urlreward" || (task.authKey.isNotBlank() && task.activityType.equals("bingredirect", ignoreCase = true))) {
-                                            val apiEarned = if (task.authKey.isNotBlank()) {
-                                                try {
-                                                    RewardsActivitiesEngine.reportActivityViaBingApi(
-                                                        task,
-                                                        account.cookiesSnapshot ?: "",
-                                                        account.customUserAgent ?: "",
-                                                        resolveProxyForAccount(account)
-                                                    )
-                                                } catch (e: Exception) {
-                                                    if (e is kotlinx.coroutines.CancellationException) throw e
-                                                    0
-                                                }
-                                            } else 0
-
-                                            if (apiEarned > 0) {
-                                                taskSuccess = true
-                                                vlogManager?.logPoints(
-                                                    "[FAST-PATH] Hoàn thành Daily Task qua HTTP ReportActivity API: ${task.title} (+${apiEarned}đ)",
-                                                    "OfferId: ${task.offerId} | Destination: ${task.destinationUrl}",
-                                                    account.email
+                                        // Error isolation: try/catch per task để không để 1 thẻ lỗi làm hỏng toàn bộ pipeline
+                                        try {
+                                            if (!isDomTask) {
+                                                // 1. Thẻ urlreward / news: Chạy THUẦN HTTP qua executeSingleTaskHttp (ưu tiên reportActivity -> fallback fast redirect 1.5s ngầm)
+                                                // Tuyệt đối không fallback WebView cho urlreward
+                                                val httpOk = RewardsActivitiesEngine.executeSingleTaskHttp(
+                                                    task,
+                                                    account.cookiesSnapshot,
+                                                    account.customUserAgent,
+                                                    resolveProxyForAccount(account)
                                                 )
-                                            } else {
-                                                // Kích hoạt HTTP Redirect tracker trước
-                                                try {
-                                                    RewardsActivitiesEngine.executeFastRedirect(
-                                                        task.destinationUrl,
-                                                        task.offerId,
-                                                        account.cookiesSnapshot,
-                                                        resolveProxyForAccount(account)
+                                                taskSuccess = httpOk
+                                                if (httpOk) {
+                                                    vlogManager?.logPoints(
+                                                        "[FAST-PATH] Hoàn thành Daily Task urlreward qua HTTP: ${task.title} (+${task.pointValue}đ)",
+                                                        "OfferId: ${task.offerId} | Destination: ${task.destinationUrl}",
+                                                        account.email
                                                     )
-                                                } catch (e: Exception) {
-                                                    if (e is kotlinx.coroutines.CancellationException) throw e
-                                                }
-                                                // Đảm bảo WebView đang ở trên trang Dashboard trước khi gọi solveDailyTask
-                                                ensureOnRewardsDashboard(targetWebView, account)
-                                                val cardClickTask = if (task.taskType.equals("poll", ignoreCase = true) ||
-                                                    task.taskType.equals("quiz", ignoreCase = true)
-                                                ) {
-                                                    task.copy(taskType = "urlreward")
                                                 } else {
-                                                    task
+                                                    vlogManager?.logPoints(
+                                                        "[FAST-PATH] Đã gửi HTTP fast redirect cho Daily Task urlreward: ${task.title}",
+                                                        "OfferId: ${task.offerId} | Chờ server Bing cập nhật điểm",
+                                                        account.email
+                                                    )
+                                                    taskSuccess = true
                                                 }
-                                                val clickedOnDashboard = RewardsActivitiesEngine.solveDailyTask(targetWebView, cardClickTask)
-                                                if (clickedOnDashboard) {
-                                                    val dwellSecs = Random.nextLong(3500L, 5000L)
-                                                    safeDelay(dwellSecs)
-                                                    if (isQuizTask || isPollTask) {
+                                            } else {
+                                                // 2. Thẻ Quiz / Poll:
+                                                // A. Ưu tiên thử qua API chính thống trước nếu có authKey
+                                                val apiEarned = if (task.authKey.isNotBlank()) {
+                                                    try {
+                                                        RewardsActivitiesEngine.reportActivityViaBingApi(
+                                                            task,
+                                                            account.cookiesSnapshot ?: "",
+                                                            account.customUserAgent ?: "",
+                                                            resolveProxyForAccount(account)
+                                                        )
+                                                    } catch (e: Exception) {
+                                                        if (e is kotlinx.coroutines.CancellationException) throw e
+                                                        0
+                                                    }
+                                                } else 0
+
+                                                if (apiEarned > 0) {
+                                                    taskSuccess = true
+                                                    vlogManager?.logPoints(
+                                                        "[FAST-PATH] Hoàn thành Daily Task quiz/poll qua HTTP ReportActivity API: ${task.title} (+${apiEarned}đ)",
+                                                        "OfferId: ${task.offerId} | Destination: ${task.destinationUrl}",
+                                                        account.email
+                                                    )
+                                                } else {
+                                                    // B. Chỉ fallback WebView khi task là quiz/poll cần click DOM
+                                                    // Kích hoạt HTTP Redirect tracker trước ngầm
+                                                    try {
+                                                        RewardsActivitiesEngine.executeFastRedirect(
+                                                            task.destinationUrl,
+                                                            task.offerId,
+                                                            account.cookiesSnapshot,
+                                                            resolveProxyForAccount(account),
+                                                            account.customUserAgent ?: RewardsActivitiesEngine.DEFAULT_DESKTOP_EDGE_UA
+                                                        )
+                                                    } catch (e: Exception) {
+                                                        if (e is kotlinx.coroutines.CancellationException) throw e
+                                                    }
+
+                                                    // Đảm bảo WebView đang ở trên trang Dashboard trước khi gọi solveDailyTask
+                                                    ensureOnRewardsDashboard(targetWebView, account)
+                                                    val cardClickTask = task.copy(taskType = "urlreward")
+                                                    val clickedOnDashboard = RewardsActivitiesEngine.solveDailyTask(targetWebView, cardClickTask)
+                                                    if (clickedOnDashboard) {
+                                                        val dwellSecs = Random.nextLong(3500L, 5000L)
+                                                        safeDelay(dwellSecs)
                                                         val afterUrl = withContext(AndroidMainDispatcher) { targetWebView.url } ?: ""
                                                         if (afterUrl.contains("rewards.bing.com/dashboard", ignoreCase = true) &&
                                                             task.destinationUrl.isNotBlank() &&
@@ -1287,85 +1323,41 @@ class RewardsStateMachine(
                                                             loadUrlAndWait(targetWebView, task.destinationUrl, 15000L)
                                                             safeDelay(2500L)
                                                         }
-                                                    }
-                                                    taskSuccess = when {
-                                                        isQuizTask -> runQuizStepLoop(targetWebView, task)
-                                                        isPollTask -> {
-                                                            val pollOk = RewardsActivitiesEngine.solveDailyTask(targetWebView, task.copy(taskType = "poll"))
-                                                            safeDelay(2000L)
-                                                            pollOk
+                                                        taskSuccess = when {
+                                                            isQuizTask -> runQuizStepLoop(targetWebView, task)
+                                                            isPollTask -> {
+                                                                val pollOk = RewardsActivitiesEngine.solveDailyTask(targetWebView, task.copy(taskType = "poll"))
+                                                                safeDelay(2000L)
+                                                                pollOk
+                                                            }
+                                                            else -> true
                                                         }
-                                                        else -> true
-                                                    }
-                                                    loadUrlAndWait(targetWebView, "https://rewards.bing.com/dashboard", 15000L)
-                                                    safeDelay(2000L)
-                                                } else if (task.destinationUrl.isNotBlank() && task.destinationUrl.startsWith("https://")) {
-                                                    loadUrlAndWait(targetWebView, task.destinationUrl, 15000L)
-                                                    val dwellSecs = Random.nextLong(3500L, 5000L)
-                                                    safeDelay(dwellSecs)
-                                                    taskSuccess = when {
-                                                        isQuizTask -> runQuizStepLoop(targetWebView, task)
-                                                        isPollTask -> {
-                                                            val pollOk = RewardsActivitiesEngine.solveDailyTask(targetWebView, task.copy(taskType = "poll"))
-                                                            safeDelay(2000L)
-                                                            pollOk
+                                                        loadUrlAndWait(targetWebView, "https://rewards.bing.com/dashboard", 15000L)
+                                                        safeDelay(2000L)
+                                                    } else if (task.destinationUrl.isNotBlank() && task.destinationUrl.startsWith("https://")) {
+                                                        loadUrlAndWait(targetWebView, task.destinationUrl, 15000L)
+                                                        val dwellSecs = Random.nextLong(3500L, 5000L)
+                                                        safeDelay(dwellSecs)
+                                                        taskSuccess = when {
+                                                            isQuizTask -> runQuizStepLoop(targetWebView, task)
+                                                            isPollTask -> {
+                                                                val pollOk = RewardsActivitiesEngine.solveDailyTask(targetWebView, task.copy(taskType = "poll"))
+                                                                safeDelay(2000L)
+                                                                pollOk
+                                                            }
+                                                            else -> true
                                                         }
-                                                        else -> true
+                                                        loadUrlAndWait(targetWebView, "https://rewards.bing.com/dashboard", 15000L)
+                                                        safeDelay(2000L)
+                                                    } else {
+                                                        taskSuccess = false
                                                     }
-                                                    loadUrlAndWait(targetWebView, "https://rewards.bing.com/dashboard", 15000L)
-                                                    safeDelay(2000L)
-                                                } else {
-                                                    taskSuccess = false
                                                 }
                                             }
-                                        } else if (task.destinationUrl.isNotBlank() && task.destinationUrl.startsWith("https://")) {
-                                            // Pre-report qua Bing API nếu có authKey trước khi giải trên WebView
-                                            if (task.authKey.isNotBlank() && task.userId.isNotBlank()) {
-                                                try {
-                                                    RewardsActivitiesEngine.executeSingleTaskHttp(
-                                                        task,
-                                                        account.cookiesSnapshot,
-                                                        account.customUserAgent,
-                                                        resolveProxyForAccount(account)
-                                                    )
-                                                } catch (e: Exception) {
-                                                    if (e is kotlinx.coroutines.CancellationException) throw e
-                                                }
-                                            }
-                                            loadUrlAndWait(targetWebView, task.destinationUrl, 15000L)
-                                            // Dwell time 3-5 giây để Microsoft ghi nhận tương tác người thật
-                                            val dwellSecs = Random.nextLong(3000L, 5000L)
-                                            safeDelay(dwellSecs)
-
-                                            taskSuccess = when {
-                                                isQuizTask -> runQuizStepLoop(targetWebView, task)
-                                                isPollTask -> {
-                                                    val pollOk = RewardsActivitiesEngine.solveDailyTask(targetWebView, task.copy(taskType = "poll"))
-                                                    safeDelay(2000L)
-                                                    pollOk
-                                                }
-                                                else -> {
-                                                    // news: mở trang đích và dwell 3-5s máy chủ Microsoft tự ghi nhận
-                                                    true
-                                                }
-                                            }
-
-                                            // Quay trở lại Dashboard để cập nhật tiến độ
-                                            loadUrlAndWait(targetWebView, "https://rewards.bing.com/dashboard", 15000L)
-                                            safeDelay(2000L)
-                                        } else {
-                                            // Fallback nếu không có destinationUrl
-                                            ensureOnRewardsDashboard(targetWebView, account)
-                                            val clicked = RewardsActivitiesEngine.solveDailyTask(
-                                                targetWebView,
-                                                if (isQuizTask) task.copy(taskType = "urlreward") else task
-                                            )
-                                            safeDelay(3000L)
-                                            taskSuccess = if (isQuizTask && clicked) {
-                                                runQuizStepLoop(targetWebView, task)
-                                            } else {
-                                                clicked
-                                            }
+                                        } catch (e: Exception) {
+                                            if (e is kotlinx.coroutines.CancellationException) throw e
+                                            taskSuccess = false
+                                            vlogManager?.logError("Lỗi cách ly khi xử lý thẻ Daily Set ${task.title}", e.message, account.email)
                                         }
 
                                         if (taskSuccess) {
@@ -1557,8 +1549,15 @@ class RewardsStateMachine(
                     }
 
                     // 0.5. PHASE 0.5: DAPI MOBILE ACTIVITIES (Sapphire Daily Check-in & MSN Read to Earn)
-                    val isPhase05Needed = !isDapiPhaseDoneForAccount(account, todayStr)
-                    if (isPhase05Needed && isRunning && isActive) {
+                    val isBingAppDoneAt05 = isBingApp60Of60Done(account, todayStr)
+                    val isPhase05Needed = !isBingAppDoneAt05 && !isDapiPhaseDoneForAccount(account, todayStr)
+                    if (isBingAppDoneAt05) {
+                        vlogManager?.logPoints(
+                            "[SKIP-DAPI] Bỏ qua Phase 0.5 (DAPI Mobile Activities)",
+                            "Tài khoản ${account.email} đã hoàn thành trọn vẹn Bing App 60/60 điểm hôm nay (Daily Set & MSN Read to Earn)",
+                            account.email
+                        )
+                    } else if (isPhase05Needed && isRunning && isActive) {
                         try {
                             wakeLockHelper?.acquire("Cycle_${account.id}")
                             if (targetWebView != null) {
@@ -1568,20 +1567,16 @@ class RewardsStateMachine(
                                 }
                             }
                             onStatusUpdate("Tài khoản: ${account.email}", "[Phase 0.5] Khởi chạy DAPI Mobile Activities...")
-                            vlogManager?.logSearch("Bắt đầu Phase 0.5: DAPI Activities", "Kiểm tra và xác thực OAuth2 Bearer Token...", account.email)
+                            vlogManager?.logSearch("Bắt đầu Phase 0.5: DAPI Activities", "Kiểm tra và xác thực OAuth2 Bearer Token (Pure HTTP 302 / WebView)...", account.email)
 
+                            // Luôn gọi DapiAuthManager.ensureValidToken (tận dụng Pure HTTP 302 từ account.cookiesSnapshot)
                             var dapiToken = DapiAuthManager.ensureValidToken(account, targetWebView, database)
                             if (dapiToken.isNullOrBlank()) {
                                 val maxDapiAttempts = maxOf(1, dapiMaxRetries)
                                 val attempts = incrementDapiAttempts(account.id, todayStr)
-                                val hasNoRefreshToken = account.dapiRefreshToken.isNullOrBlank()
-                                if (hasNoRefreshToken || attempts >= maxDapiAttempts) {
+                                if (attempts >= maxDapiAttempts) {
                                     markPhase05CompletedToday(account.id, todayStr)
-                                    val detailMsg = if (hasNoRefreshToken) {
-                                        "Tài khoản chưa có DAPI Refresh Token. Bỏ qua Phase 0.5 hôm nay cho ${account.email}."
-                                    } else {
-                                        "Đã đạt giới hạn thử DAPI hôm nay. Bỏ qua DAPI cho ${account.email} (Vui lòng nhấn Đăng nhập lại để cấp quyền login.live.com)."
-                                    }
+                                    val detailMsg = "Đã đạt giới hạn thử DAPI hôm nay. Bỏ qua DAPI cho ${account.email} (Vui lòng kiểm tra cookies hoặc cấp lại quyền login.live.com)."
                                     vlogManager?.logSearch(
                                         "Phase 0.5: Không thể lấy DAPI token (Lần $attempts/$maxDapiAttempts)",
                                         detailMsg,
@@ -1590,7 +1585,7 @@ class RewardsStateMachine(
                                 } else {
                                     vlogManager?.logError(
                                         "Phase 0.5: Không thể lấy DAPI token (Lần $attempts/$maxDapiAttempts)",
-                                        "Bỏ qua DAPI ở lượt này cho ${account.email}",
+                                        "Bỏ qua DAPI ở lượt này cho ${account.email}, sẽ thử lại ở lượt sau.",
                                         account.email
                                     )
                                 }
@@ -2173,7 +2168,8 @@ class RewardsStateMachine(
                             val otherDapiDone = isDapiPhaseDoneForAccount(it, todayStr)
                             val otherSearchDone = evaluateNextSearchPhase(it) == SearchPhase.DONE
                             val otherDailyDone = it.dailySetDone || phase0CompletedDateMap[it.id] == todayStr
-                            val otherFinished = (it.isAllMaxedOutToday(todayStr) && otherDailyDone) || (otherSearchDone && otherDailyDone && otherDapiDone)
+                            val otherBingAppDone = isBingApp60Of60Done(it, todayStr)
+                            val otherFinished = (it.isAllMaxedOutToday(todayStr) && otherDailyDone) || (otherSearchDone && otherDailyDone && otherDapiDone) || (otherSearchDone && otherBingAppDone)
                             it.id != account.id &&
                                 it.isEnabled &&
                                 !it.cookieExpired &&

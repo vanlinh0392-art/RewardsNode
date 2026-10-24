@@ -210,4 +210,82 @@ class RewardsActivitiesEngineTest {
         assertEquals("Escaped Task", tasks[0].title)
         assertFalse(tasks[0].isCompleted)
     }
+
+    @Test
+    fun testIsInteractiveDomTask() {
+        val urlRewardTask = DailyTask(
+            id = "ds_url",
+            title = "Khám phá địa danh",
+            pointValue = 10,
+            destinationUrl = "https://www.bing.com/search?q=Vietnam",
+            taskType = "urlreward",
+            isCompleted = false
+        )
+        assertFalse("urlreward must NOT require DOM interaction", RewardsActivitiesEngine.isInteractiveDomTask(urlRewardTask))
+
+        val newsTask = DailyTask(
+            id = "ds_news",
+            title = "Tin tức buổi sáng",
+            pointValue = 10,
+            destinationUrl = "https://www.bing.com/news",
+            taskType = "news",
+            isCompleted = false
+        )
+        assertFalse("news task must NOT require DOM interaction", RewardsActivitiesEngine.isInteractiveDomTask(newsTask))
+
+        val quizTask = DailyTask(
+            id = "ds_quiz",
+            title = "Thử thách trắc nghiệm",
+            pointValue = 10,
+            destinationUrl = "https://www.bing.com/search?q=Quiz&form=dsetqu",
+            taskType = "quiz",
+            isCompleted = false
+        )
+        assertTrue("quiz task MUST require DOM interaction", RewardsActivitiesEngine.isInteractiveDomTask(quizTask))
+
+        val pollTask = DailyTask(
+            id = "ds_poll",
+            title = "Bình chọn hàng ngày",
+            pointValue = 10,
+            destinationUrl = "https://www.bing.com/search?q=Poll&btoption=1",
+            taskType = "poll",
+            isCompleted = false
+        )
+        assertTrue("poll task MUST require DOM interaction", RewardsActivitiesEngine.isInteractiveDomTask(pollTask))
+    }
+
+    @Test
+    fun testDailySetPipelineErrorIsolation() = kotlinx.coroutines.runBlocking {
+        // 3 Daily Set tasks: 1 completed, 1 urlreward with blank url (fails gracefully), 1 completed
+        val tasks = listOf(
+            DailyTask("ds_1", "Thẻ 1 (Completed)", 10, "https://example.com/1", "urlreward", isCompleted = true),
+            DailyTask("ds_2", "Thẻ 2 (Blank URL)", 10, "", "urlreward", isCompleted = false),
+            DailyTask("ds_3", "Thẻ 3 (Completed)", 10, "https://example.com/3", "quiz", isCompleted = true)
+        )
+
+        val results = RewardsActivitiesEngine.executeDailySetPipelineSafe(
+            tasks = tasks,
+            cookiesJson = "",
+            delayBetweenCardsMs = 0L
+        )
+
+        assertEquals(3, results.size)
+        assertTrue("Completed task 1 must remain true", results["ds_1"] == true)
+        assertFalse("Blank task 2 must result in false without throwing", results["ds_2"] == true)
+        assertTrue("Completed task 3 must still execute and return true (Error isolation)", results["ds_3"] == true)
+    }
+
+    @Test
+    fun testExecuteSingleTaskHttpSafeOnBlankUrl() = kotlinx.coroutines.runBlocking {
+        val task = DailyTask(
+            id = "",
+            title = "Blank Task",
+            pointValue = 10,
+            destinationUrl = "",
+            taskType = "urlreward",
+            isCompleted = false
+        )
+        val result = RewardsActivitiesEngine.executeSingleTaskHttp(task, cookiesJson = "")
+        assertFalse("Should safely return false on blank URL without throwing exception", result)
+    }
 }

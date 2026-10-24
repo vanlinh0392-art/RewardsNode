@@ -81,3 +81,10 @@ dependencies {
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.8.1")
     testImplementation("org.json:json:20240303")
 }
+
+afterEvaluate {
+    tasks.named<JavaCompile>("compileDebugJavaWithJavac").configure {
+        classpath = (classpath ?: files()) + files("${layout.buildDirectory.get().asFile}/tmp/kotlin-classes/debug")
+    }
+}
+

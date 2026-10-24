@@ -154,4 +154,65 @@ class RewardsStateMachineRoutingTest {
         val nextPhase = sm.evaluateNextSearchPhase(account, SearchPhase.PHASE_1_PC)
         assertEquals("Level 1 with maxed PC and Mobile must advance to Phase 3 (Edge)", SearchPhase.PHASE_3_EDGE, nextPhase)
     }
+
+    @Test
+    fun testIsBingApp60Of60Done_allCombinations() {
+        val todayStr = "2026-10-24"
+        val sm = RewardsStateMachine(
+            keywordEngine = KeywordEngine(),
+            onExecuteSearch = { _, _, _ -> true },
+            onStatusUpdate = { _, _ -> },
+            onAccountUpdated = { }
+        )
+
+        // Case 1: dailySetDone = true and readProgress >= 30 -> TRUE
+        val acc1 = AccountProfile(
+            id = "acc1",
+            email = "acc1@example.com",
+            profileName = "Acc 1",
+            dailySetDone = true,
+            readProgress = 30
+        )
+        assertTrue(sm.isBingApp60Of60Done(acc1, todayStr))
+
+        // Case 2: dailySetDone = false and readProgress < 30 -> FALSE
+        val acc2 = AccountProfile(
+            id = "acc2",
+            email = "acc2@example.com",
+            profileName = "Acc 2",
+            dailySetDone = false,
+            readProgress = 15
+        )
+        assertFalse(sm.isBingApp60Of60Done(acc2, todayStr))
+
+        // Case 3: dailySetDone = true but readProgress < 30 -> FALSE
+        val acc3 = AccountProfile(
+            id = "acc3",
+            email = "acc3@example.com",
+            profileName = "Acc 3",
+            dailySetDone = true,
+            readProgress = 27
+        )
+        assertFalse(sm.isBingApp60Of60Done(acc3, todayStr))
+
+        // Case 4: dailySetDone = false but readProgress >= 30 -> FALSE
+        val acc4 = AccountProfile(
+            id = "acc4",
+            email = "acc4@example.com",
+            profileName = "Acc 4",
+            dailySetDone = false,
+            readProgress = 30
+        )
+        assertFalse(sm.isBingApp60Of60Done(acc4, todayStr))
+
+        // Case 5: readProgress > 30 (vượt trần) and dailySetDone = true -> TRUE
+        val acc5 = AccountProfile(
+            id = "acc5",
+            email = "acc5@example.com",
+            profileName = "Acc 5",
+            dailySetDone = true,
+            readProgress = 33
+        )
+        assertTrue(sm.isBingApp60Of60Done(acc5, todayStr))
+    }
 }

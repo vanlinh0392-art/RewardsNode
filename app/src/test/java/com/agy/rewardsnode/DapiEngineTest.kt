@@ -312,4 +312,20 @@ class DapiEngineTest {
 
         assertEquals("Không được đọc thêm bài nào nếu đã đủ 30 điểm từ trước", 0, articlesRead)
     }
+
+    @Test
+    fun testReadToEarnEarlyExit_whenCurrentProgressAlreadyAtOrAboveMaxPoints() {
+        // Calling executeReadToEarn when currentProgress >= maxPoints (30) returns immediately with 0 articles and success
+        val result = kotlinx.coroutines.runBlocking {
+            DapiActivitiesEngine.executeReadToEarn(
+                token = "dummy_token",
+                currentProgress = 30,
+                maxPoints = 30
+            )
+        }
+        assertTrue("Early exit phải trả về isSuccess = true", result.isSuccess)
+        assertEquals("Không được đọc bài nào khi đã đạt maxPoints", 0, result.articlesRead)
+        assertEquals("Points earned phải là 0", 0, result.pointsEarned)
+        assertEquals("Current progress giữ nguyên 30", 30, result.currentProgress)
+    }
 }

@@ -38,7 +38,7 @@ typealias PromotionTask = DailyTask
  */
 object RewardsActivitiesEngine {
     const val REPORT_ACTIVITY_API_URL = "https://www.bing.com/msrewards/api/v1/reportactivity"
-    private const val DEFAULT_DESKTOP_EDGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
+    const val DEFAULT_DESKTOP_EDGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
 
     /**
      * Phân loại loại nhiệm vụ (poll, quiz, news, urlreward) dựa trên URL và tiêu đề.
@@ -170,7 +170,8 @@ object RewardsActivitiesEngine {
     /**
      * Thực thi một nhiệm vụ Daily Set / Keep Earning qua HTTP:
      * Ưu tiên gọi reportActivityViaBingApi đầu tiên khi task có authKey và userId,
-     * sau đó fallback sang executeFastRedirect.
+     * sau đó fallback sang executeFastRedirect (HTTP GET follow redirects ngầm 1.5s).
+     * Đảm bảo error isolation với try/catch.
      */
     suspend fun executeSingleTaskHttp(
         task: PromotionTask,
@@ -178,28 +179,43 @@ object RewardsActivitiesEngine {
         userAgent: String? = null,
         proxyUrl: String? = null
     ): Boolean = withContext(Dispatchers.IO) {
+        if (task.destinationUrl.isBlank() || (!task.destinationUrl.startsWith("http://") && !task.destinationUrl.startsWith("https://") && !task.destinationUrl.startsWith("/"))) {
+            return@withContext false
+        }
         val effectiveCookies = cookiesJson ?: ""
         val effectiveUa = if (!userAgent.isNullOrBlank()) userAgent else DEFAULT_DESKTOP_EDGE_UA
-        if (task.authKey.isNotBlank() && task.userId.isNotBlank()) {
-            val earned = reportActivityViaBingApi(task, effectiveCookies, effectiveUa, proxyUrl)
-            if (earned > 0) {
-                return@withContext true
+        try {
+            if (task.authKey.isNotBlank() && task.userId.isNotBlank()) {
+                val earned = reportActivityViaBingApi(task, effectiveCookies, effectiveUa, proxyUrl)
+                if (earned > 0) {
+                    return@withContext true
+                }
             }
+        } catch (_: Exception) {
+            // Error isolation: Thất bại ở API report chuyển tiếp an toàn sang executeFastRedirect
         }
-        executeFastRedirect(task.destinationUrl, task.offerId, effectiveCookies, proxyUrl)
+        try {
+            executeFastRedirect(task.destinationUrl, task.offerId, effectiveCookies, proxyUrl, effectiveUa)
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
      * Kích hoạt nhanh nhiệm vụ chuyển hướng (Fast Redirect) trực tiếp qua HTTP GET trên Dispatchers.IO.
      * Thực hiện HTTP GET đến destinationUrl (hoặc URL chuyển hướng Bing Rewards) với Cookie header,
-     * timeout 3500ms, tự động chuyển tiếp (follow redirects).
+     * timeout 3500ms, tự động chuyển tiếp (follow redirects ngầm 1.5s).
      */
     suspend fun executeFastRedirect(
         destinationUrl: String,
         offerId: String,
         cookiesSnapshot: String?,
-        proxyUrl: String? = null
+        proxyUrl: String? = null,
+        userAgent: String = DEFAULT_DESKTOP_EDGE_UA
     ): Boolean = withContext(Dispatchers.IO) {
+        if (destinationUrl.isBlank() || (!destinationUrl.startsWith("http://") && !destinationUrl.startsWith("https://") && !destinationUrl.startsWith("/"))) {
+            return@withContext false
+        }
         var currentUrl = when {
             destinationUrl.contains("/rewardsapp/redirect") || destinationUrl.contains("/redirect?") -> destinationUrl
             offerId.isNotBlank() && !offerId.startsWith("Global_DailySet_DOM") -> {
@@ -256,7 +272,7 @@ object RewardsActivitiesEngine {
                     instanceFollowRedirects = false
                     useCaches = false
                     setRequestProperty("Connection", "close")
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0")
+                    setRequestProperty("User-Agent", userAgent.ifBlank { DEFAULT_DESKTOP_EDGE_UA })
                     setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                     setRequestProperty("Accept-Language", "en-US,en;q=0.9")
                     setRequestProperty("Referer", "https://rewards.bing.com/")
@@ -288,6 +304,12 @@ object RewardsActivitiesEngine {
             } finally {
                 connection?.disconnect()
             }
+        }
+        if (isSuccess) {
+            try {
+                // HTTP GET follow redirects ngầm 1.5s để server Bing ghi nhận dwell và cập nhật điểm
+                kotlinx.coroutines.delay(1500L)
+            } catch (_: Exception) {}
         }
         isSuccess
     }
@@ -984,53 +1006,169 @@ object RewardsActivitiesEngine {
 
     /**
      * Thực thi giải tự động một nhiệm vụ Daily Task tùy thuộc vào taskType (poll, quiz, hoặc urlreward).
+     * Bọc trong try/catch bảo đảm error isolation khi thao tác DOM/WebView.
      */
     suspend fun solveDailyTask(webView: WebView, task: DailyTask): Boolean = withContext(AndroidMainDispatcher) {
         if (task.isCompleted) return@withContext true
 
-        when (task.taskType.lowercase(Locale.ROOT)) {
-            "poll" -> {
-                val raw = evaluateScript(webView, createPollSolverScript())
-                parseBoolean(raw)
-            }
-            "quiz" -> {
-                val raw = evaluateScript(webView, createQuizSolverScript())
-                parseBoolean(raw)
-            }
-            else -> {
-                val safeId = task.id.replace(Regex("[^a-zA-Z0-9_-]"), "")
-                val clickScript = """
-                    (function() {
-                        try {
-                            var card = document.querySelector('[instrument*="' + '$safeId' + '"]') ||
-                                       document.querySelector('[data-bi-name*="' + '$safeId' + '"]') ||
-                                       document.querySelector('a[href*="' + '$safeId' + '"]');
-                            if (card) {
-                                var a = card.tagName === 'A' ? card : card.querySelector('a');
-                                if (a) a.setAttribute('target', '_self');
-                                card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                card.click();
-                                return "true";
+        try {
+            when (task.taskType.lowercase(Locale.ROOT)) {
+                "poll" -> {
+                    val raw = evaluateScript(webView, createPollSolverScript())
+                    parseBoolean(raw)
+                }
+                "quiz" -> {
+                    val raw = evaluateScript(webView, createQuizSolverScript())
+                    parseBoolean(raw)
+                }
+                else -> {
+                    val safeId = task.id.replace(Regex("[^a-zA-Z0-9_-]"), "")
+                    val clickScript = """
+                        (function() {
+                            try {
+                                var card = document.querySelector('[instrument*="' + '$safeId' + '"]') ||
+                                           document.querySelector('[data-bi-name*="' + '$safeId' + '"]') ||
+                                           document.querySelector('a[href*="' + '$safeId' + '"]');
+                                if (card) {
+                                    var a = card.tagName === 'A' ? card : card.querySelector('a');
+                                    if (a) a.setAttribute('target', '_self');
+                                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                    card.click();
+                                    return "true";
+                                }
+                                return "false";
+                            } catch (e) {
+                                return "false";
                             }
-                            return "false";
-                        } catch (e) {
-                            return "false";
-                        }
-                    })();
-                """.trimIndent()
-                val clicked = parseBoolean(evaluateScript(webView, clickScript))
-                if (clicked) {
-                    true
-                } else if (task.destinationUrl.isNotBlank() && 
-                           task.destinationUrl.startsWith("https://") &&
-                           webView.url != task.destinationUrl) {
-                    webView.loadUrl(task.destinationUrl)
-                    true
-                } else {
-                    false
+                        })();
+                    """.trimIndent()
+                    val clicked = parseBoolean(evaluateScript(webView, clickScript))
+                    if (clicked) {
+                        true
+                    } else if (task.destinationUrl.isNotBlank() && 
+                               task.destinationUrl.startsWith("https://") &&
+                               webView.url != task.destinationUrl) {
+                        webView.loadUrl(task.destinationUrl)
+                        true
+                    } else {
+                        false
+                    }
                 }
             }
+        } catch (_: Exception) {
+            false
         }
+    }
+
+    /**
+     * Kiểm tra xem nhiệm vụ có bắt buộc phải tương tác DOM (Quiz hoặc Poll) hay không.
+     * urlreward / news / browse chạy thuần túy qua HTTP, không cần WebView.
+     */
+    fun isInteractiveDomTask(task: DailyTask): Boolean {
+        val type = task.taskType.lowercase(Locale.ROOT)
+        val dest = task.destinationUrl.lowercase(Locale.ROOT)
+        val title = task.title.lowercase(Locale.ROOT)
+        return type == "quiz" || type == "poll" ||
+               dest.contains("form=dsetqu") || dest.contains("btoption") ||
+               dest.contains("quiz") || dest.contains("poll") ||
+               title.contains("quiz") || title.contains("poll") ||
+               title.contains("thử thách") || title.contains("bình chọn") || title.contains("khảo sát")
+    }
+
+    /**
+     * Xử lý an toàn cho một thẻ Daily Set đơn lẻ:
+     * - Thẻ urlreward: Chạy thuần HTTP 100% qua executeSingleTaskHttp (reportActivityViaBingApi -> executeFastRedirect ngầm 1.5s), không chạm WebView.
+     * - Thẻ quiz / poll:
+     *   1. Thử HTTP reportActivityViaBingApi trước nếu có authKey + userId.
+     *   2. Chỉ fallback WebView (solveDailyTask) khi task là quiz/poll cần click DOM.
+     * - Error isolation: try/catch per task độc lập, lỗi 1 thẻ không làm hỏng toàn bộ pipeline.
+     */
+    suspend fun executeDailySetCardSafe(
+        task: DailyTask,
+        cookiesJson: String?,
+        userAgent: String? = null,
+        proxyUrl: String? = null,
+        webView: WebView? = null
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (task.isCompleted) return@withContext true
+
+        try {
+            val isDomTask = isInteractiveDomTask(task)
+
+            // 1. Thẻ urlreward thuần túy -> Chạy 100% thuần HTTP, tuyệt đối không mở/click WebView
+            if (!isDomTask) {
+                return@withContext executeSingleTaskHttp(task, cookiesJson, userAgent, proxyUrl)
+            }
+
+            // 2. Thẻ Quiz hoặc Poll:
+            // A. Ưu tiên thử nhanh qua Bing API trước
+            if (task.authKey.isNotBlank() && task.userId.isNotBlank()) {
+                try {
+                    val earned = reportActivityViaBingApi(
+                        task,
+                        cookiesJson ?: "",
+                        userAgent ?: DEFAULT_DESKTOP_EDGE_UA,
+                        proxyUrl
+                    )
+                    if (earned > 0) return@withContext true
+                } catch (_: Exception) {}
+            }
+
+            // B. Chỉ fallback WebView khi task là quiz/poll cần click DOM
+            if (webView != null) {
+                try {
+                    withContext(AndroidMainDispatcher) {
+                        solveDailyTask(webView, task)
+                    }
+                } catch (_: Exception) {
+                    false
+                }
+            } else {
+                executeFastRedirect(task.destinationUrl, task.offerId, cookiesJson, proxyUrl, userAgent ?: DEFAULT_DESKTOP_EDGE_UA)
+            }
+        } catch (_: Exception) {
+            // Error isolation: Thẻ lỗi trả về false, không throw ra ngoài
+            false
+        }
+    }
+
+    /**
+     * Điều phối thực thi an toàn cho 3 thẻ Daily Set (hoặc N thẻ):
+     * - Error isolation: try/catch per task riêng biệt, 1 thẻ lỗi không làm gián đoạn các thẻ khác.
+     * - Thẻ urlreward chạy thuần HTTP, chỉ fallback WebView khi task là quiz/poll cần click DOM.
+     */
+    suspend fun executeDailySetPipelineSafe(
+        tasks: List<DailyTask>,
+        cookiesJson: String?,
+        userAgent: String? = null,
+        proxyUrl: String? = null,
+        webView: WebView? = null,
+        delayBetweenCardsMs: Long = 1500L,
+        onCardFinished: ((task: DailyTask, success: Boolean) -> Unit)? = null
+    ): Map<String, Boolean> = withContext(Dispatchers.IO) {
+        val results = mutableMapOf<String, Boolean>()
+        for ((idx, task) in tasks.withIndex()) {
+            if (task.isCompleted) {
+                results[task.id] = true
+                try { onCardFinished?.invoke(task, true) } catch (_: Exception) {}
+                continue
+            }
+
+            val success = try {
+                executeDailySetCardSafe(task, cookiesJson, userAgent, proxyUrl, webView)
+            } catch (_: Exception) {
+                false
+            }
+            results[task.id] = success
+            try { onCardFinished?.invoke(task, success) } catch (_: Exception) {}
+
+            if (idx < tasks.size - 1 && delayBetweenCardsMs > 0) {
+                try {
+                    kotlinx.coroutines.delay(delayBetweenCardsMs)
+                } catch (_: Exception) {}
+            }
+        }
+        results
     }
 
     /**

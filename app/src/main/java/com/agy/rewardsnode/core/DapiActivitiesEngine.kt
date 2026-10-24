@@ -247,12 +247,14 @@ object DapiActivitiesEngine {
             val sBody = streakResp.body.lowercase()
             val sJson = try { JSONObject(streakResp.body) } catch (_: Exception) { null }
             val sRespObj = sJson?.optJSONObject("response")
-            val sDup = sRespObj?.optBoolean("isDuplicate", false) ?: false
-            val sActP = sRespObj?.optJSONObject("activity")?.optInt("p", -1) ?: -1
+            val sDup = sRespObj?.optBoolean("isDuplicate", false) ?: sJson?.optBoolean("isDuplicate", false) ?: false
+            val sActObj = sRespObj?.optJSONObject("activity") ?: sJson?.optJSONObject("activity")
+            val sActP = sActObj?.optInt("p", -1) ?: sRespObj?.optInt("p", -1) ?: sJson?.optInt("p", -1) ?: -1
             val sEarned = (if (sActP > 0) sActP else null)
                 ?: sJson?.optInt("amount", 0)?.takeIf { it > 0 }
                 ?: sJson?.optInt("points", 0)?.takeIf { it > 0 }
                 ?: sRespObj?.optInt("amount", 0)?.takeIf { it > 0 }
+                ?: sRespObj?.optInt("points", 0)?.takeIf { it > 0 }
                 ?: 0
 
             if (sDup || sActP == 0 || sBody.contains("already") || sBody.contains("completed") || sBody.contains("claimed")) {
@@ -279,13 +281,15 @@ object DapiActivitiesEngine {
             val body = sapphireResp.body.lowercase()
             val json = try { JSONObject(sapphireResp.body) } catch (_: Exception) { null }
             val respObj = json?.optJSONObject("response")
-            val isDuplicate = respObj?.optBoolean("isDuplicate", false) ?: false
-            val activityP = respObj?.optJSONObject("activity")?.optInt("p", -1) ?: -1
+            val isDuplicate = respObj?.optBoolean("isDuplicate", false) ?: json?.optBoolean("isDuplicate", false) ?: false
+            val actObj = respObj?.optJSONObject("activity") ?: json?.optJSONObject("activity")
+            val activityP = actObj?.optInt("p", -1) ?: respObj?.optInt("p", -1) ?: json?.optInt("p", -1) ?: -1
             val earned = (if (activityP > 0) activityP else null)
                 ?: json?.optInt("amount", 0)?.takeIf { it > 0 }
                 ?: json?.optInt("points", 0)?.takeIf { it > 0 }
                 ?: json?.optInt("payout", 0)?.takeIf { it > 0 }
                 ?: respObj?.optInt("amount", 0)?.takeIf { it > 0 }
+                ?: respObj?.optInt("points", 0)?.takeIf { it > 0 }
                 ?: 0
 
             if (isDuplicate || activityP == 0 || body.contains("already") || body.contains("completed") || body.contains("claimed")) {
@@ -347,7 +351,7 @@ object DapiActivitiesEngine {
 
         var progress = currentProgress
         if (progress >= maxPoints) {
-            Log.i(TAG, "MSN Read to Earn: Đã đạt trần $progress/$maxPoints pts, bỏ qua.")
+            Log.i(TAG, "MSN Read to Earn: Đã đạt trần $progress/$maxPoints pts, bỏ qua (Early exit).")
             return@withContext ReadNewsResult(
                 isSuccess = true,
                 articlesRead = 0,
@@ -373,29 +377,54 @@ object DapiActivitiesEngine {
             if (response.isSuccess) {
                 val body = response.body.lowercase()
                 if (body.contains("limit_reached") || body.contains("max_reached") || body.contains("no_rewards")) {
-                    Log.i(TAG, "MSN Read to Earn: Server báo đạt giới hạn thưởng.")
+                    Log.i(TAG, "MSN Read to Earn: Server báo đạt giới hạn thưởng -> Early exit.")
+                    progress = maxPoints
                     break
                 }
 
                 val json = try { JSONObject(response.body) } catch (_: Exception) { null }
                 val respObj = json?.optJSONObject("response")
-                val isDuplicate = respObj?.optBoolean("isDuplicate", false) ?: false
-                val newBalance = respObj?.optInt("balance", -1) ?: -1
-                val activityP = respObj?.optJSONObject("activity")?.optInt("p", -1) ?: -1
+                val isDuplicate = respObj?.optBoolean("isDuplicate", false)
+                    ?: json?.optBoolean("isDuplicate", false)
+                    ?: false
+
+                // Bắt chính xác newBalance từ response object hoặc root JSON
+                val newBalance = when {
+                    respObj?.has("balance") == true -> respObj.optInt("balance", -1)
+                    json?.has("balance") == true -> json.optInt("balance", -1)
+                    else -> -1
+                }
+
+                // Bắt chính xác activityP từ activity object trong response hoặc root JSON
+                val actObj = respObj?.optJSONObject("activity") ?: json?.optJSONObject("activity")
+                val activityP = when {
+                    actObj?.has("p") == true -> actObj.optInt("p", -1)
+                    respObj?.has("p") == true -> respObj.optInt("p", -1)
+                    json?.has("p") == true -> json.optInt("p", -1)
+                    else -> -1
+                }
 
                 val earnedThisArticle = when {
                     isDuplicate -> 0
-                    activityP >= 0 -> activityP
+                    activityP > 0 -> activityP
+                    activityP == 0 -> 0
                     lastKnownBalance >= 0 && newBalance >= 0 -> maxOf(0, newBalance - lastKnownBalance)
-                    respObj == null && response.body.isBlank() -> 0
-                    else -> 0
+                    lastKnownBalance < 0 && newBalance >= 0 && !isDuplicate -> 3
+                    else -> {
+                        val fallbackPoints = (respObj?.optInt("amount", 0)?.takeIf { it > 0 })
+                            ?: (json?.optInt("amount", 0)?.takeIf { it > 0 })
+                            ?: (respObj?.optInt("points", 0)?.takeIf { it > 0 })
+                            ?: (json?.optInt("points", 0)?.takeIf { it > 0 })
+                            ?: 0
+                        if (fallbackPoints > 0) fallbackPoints else (if (!isDuplicate && response.isSuccess) 3 else 0)
+                    }
                 }
                 if (newBalance >= 0) {
                     lastKnownBalance = newBalance
                 }
 
                 if (earnedThisArticle <= 0) {
-                    Log.i(TAG, "MSN Read to Earn: Không nhận thêm điểm (activityP=$activityP, isDuplicate=$isDuplicate, balance=$newBalance) -> Đã đạt giới hạn đọc báo hôm nay.")
+                    Log.i(TAG, "MSN Read to Earn: Không nhận thêm điểm (activityP=$activityP, isDuplicate=$isDuplicate, balance=$newBalance) -> Đã đạt giới hạn đọc báo hôm nay (Early exit).")
                     progress = maxPoints
                     break
                 }
@@ -407,6 +436,12 @@ object DapiActivitiesEngine {
                 Log.i(TAG, "Đã đọc bài #$articlesRead/10 (+${earnedThisArticle}đ, balance=$newBalance) -> Tiến độ: $progress/$maxPoints")
                 onArticleDone?.invoke(articlesRead, progress)
 
+                // Early exit ngay lập tức khi progress đạt maxPoints (30đ), không chờ delay
+                if (progress >= maxPoints) {
+                    Log.i(TAG, "MSN Read to Earn: Đã đạt trần $progress/$maxPoints pts -> Dừng ngay lập tức (Early exit).")
+                    break
+                }
+
                 // Giãn cách ngẫu nhiên 8.5s - 14s giữa các bài nếu còn bài cần đọc
                 if (articlesRead < maxArticles && progress < maxPoints) {
                     val jitterDelay = Random.nextLong(8500L, 14001L)
@@ -416,7 +451,8 @@ object DapiActivitiesEngine {
             } else {
                 val body = response.body.lowercase()
                 if (body.contains("already") || body.contains("limit") || body.contains("completed")) {
-                    Log.i(TAG, "MSN Read to Earn (HTTP ${response.statusCode}): Đạt giới hạn điểm danh/đọc báo.")
+                    Log.i(TAG, "MSN Read to Earn (HTTP ${response.statusCode}): Đạt giới hạn điểm danh/đọc báo -> Early exit.")
+                    progress = maxPoints
                     break
                 }
 
