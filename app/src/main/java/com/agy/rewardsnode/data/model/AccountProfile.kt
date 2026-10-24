@@ -103,10 +103,21 @@ data class AccountProfile(
             }
             pcMax = balance.pcMax
         }
-        mobileMax = balance.mobileMax
-        mobileProgress = if (balance.mobileMax > 0) balance.mobileProgress else 0
-        edgeMax = balance.edgeMax
-        edgeProgress = if (balance.edgeMax > 0) balance.edgeProgress else 0
+        if (balance.source.startsWith("flyout_http")) {
+            mobileMax = balance.mobileMax
+            mobileProgress = balance.mobileProgress
+            edgeMax = balance.edgeMax
+            edgeProgress = balance.edgeProgress
+        } else {
+            if (balance.mobileMax > 0) {
+                mobileMax = balance.mobileMax
+                mobileProgress = if (wasSameDay) maxOf(mobileProgress, balance.mobileProgress) else balance.mobileProgress
+            }
+            if (balance.edgeMax > 0) {
+                edgeMax = balance.edgeMax
+                edgeProgress = if (wasSameDay) maxOf(edgeProgress, balance.edgeProgress) else balance.edgeProgress
+            }
+        }
         claimablePoints = balance.claimablePoints
         if (balance.readNewsMax > 0) {
             readMax = balance.readNewsMax
@@ -116,7 +127,7 @@ data class AccountProfile(
             level = balance.level
         } else if (balance.mobileMax > 0 || balance.pcMax > 30) {
             level = 2
-        } else if (balance.pcMax in 1..30 && balance.mobileMax == 0) {
+        } else if (balance.pcMax in 1..30 && balance.mobileMax == 0 && mobileMax == 0) {
             level = 1
         }
         val estimatedSearchesFromPoints = (pcProgress + mobileProgress) / 3

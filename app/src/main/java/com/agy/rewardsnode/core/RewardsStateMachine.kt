@@ -83,6 +83,10 @@ class RewardsStateMachine(
     private val baselineDateMap = ConcurrentHashMap<String, String>()
     // Bảng theo dõi các Phase đã thử nghiệm không tăng điểm (đạt trần hoặc cạn ngạch) của từng tài khoản trong ngày
     private val phaseExhaustedMap = ConcurrentHashMap<String, MutableSet<SearchPhase>>()
+    // Bảng ghi nhận các rổ điểm đã đạt trần trong phiên làm việc hiện tại
+    private val sessionFullBasketsMap = ConcurrentHashMap<String, MutableSet<SearchPhase>>()
+    // Bảng đếm số lần recheck của từng rổ trong phiên làm việc
+    private val sessionRecheckCountMap = ConcurrentHashMap<String, ConcurrentHashMap<SearchPhase, Int>>()
     // Bảng theo dõi số lượt delta == 0 liên tiếp của từng phase
     private val phaseZeroDeltaCountMap = ConcurrentHashMap<String, ConcurrentHashMap<SearchPhase, Int>>()
     // Bảng đếm số lần thử claim Ready-to-Claim trong ngày của từng tài khoản (tối đa maxClaimRetries lần/ngày chống lặp vô tận)
@@ -536,7 +540,6 @@ class RewardsStateMachine(
         } else {
             account.pcProgress
         }
-        val isPcDone = (pcMax > 0 && pcProgress >= pcMax) || exhausted.contains(SearchPhase.PHASE_1_PC) || isPersistedSearchExhausted
 
         val mobileMax = if (balance != null && balance.mobileMax > 0) {
             balance.mobileMax
@@ -548,12 +551,30 @@ class RewardsStateMachine(
             60
         }
         val mobileProgress = if (balance != null && balance.isSuccess && balance.mobileMax > 0) balance.mobileProgress else account.mobileProgress
-        // Level Gating: Nếu account.level < 2 hoặc mobileMax == 0, BỎ QUA Phase 2 (Mobile Search)
-        val isMobDone = (account.level < 2 || mobileMax == 0) || (mobileMax > 0 && mobileProgress >= mobileMax) || exhausted.contains(SearchPhase.PHASE_2_MOBILE)
 
         val edgeMax = if (balance != null && balance.isSuccess) balance.edgeMax else (if (account.edgeMax > 0) account.edgeMax else 0)
         val edgeProgress = if (balance != null && balance.isSuccess) balance.edgeProgress else account.edgeProgress
-        val isEdgeDone = (edgeMax == 0) || (edgeMax > 0 && edgeProgress >= edgeMax) || exhausted.contains(SearchPhase.PHASE_3_EDGE)
+
+        // Tự động latch vào sessionFullBasketsMap khi đạt trần
+        if (pcMax > 0 && pcProgress >= pcMax) {
+            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_1_PC)
+        }
+        if (mobileMax > 0 && mobileProgress >= mobileMax) {
+            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
+        }
+        if (edgeMax > 0 && edgeProgress >= edgeMax) {
+            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_3_EDGE)
+        }
+
+        val sessionFull = sessionFullBasketsMap[account.id] ?: emptySet()
+        val isPcFullInSession = sessionFull.contains(SearchPhase.PHASE_1_PC)
+        val isMobFullInSession = sessionFull.contains(SearchPhase.PHASE_2_MOBILE)
+        val isEdgeFullInSession = sessionFull.contains(SearchPhase.PHASE_3_EDGE)
+
+        val isPcDone = (pcMax > 0 && pcProgress >= pcMax) || exhausted.contains(SearchPhase.PHASE_1_PC) || isPersistedSearchExhausted || isPcFullInSession
+        // Level Gating: Nếu account.level < 2 hoặc mobileMax == 0, BỎ QUA Phase 2 (Mobile Search)
+        val isMobDone = (account.level < 2 || mobileMax == 0) || (mobileMax > 0 && mobileProgress >= mobileMax) || exhausted.contains(SearchPhase.PHASE_2_MOBILE) || isMobFullInSession
+        val isEdgeDone = (edgeMax == 0) || (edgeMax > 0 && edgeProgress >= edgeMax) || exhausted.contains(SearchPhase.PHASE_3_EDGE) || isEdgeFullInSession
 
         var phase = currentPhase
 
@@ -561,7 +582,13 @@ class RewardsStateMachine(
         if (phase == SearchPhase.PHASE_1_PC) {
             if (isPcDone) {
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_1_PC)) {
-                    val reason = if (pcMax > 0 && pcProgress >= pcMax) "Đã đạt tối đa rổ PC ($pcProgress/$pcMax)" else "Đã thử nghiệm PC không tăng thêm điểm"
+                    val reason = if (isPcFullInSession) {
+                        "Đã đạt trần PC trong phiên ($pcProgress/$pcMax)"
+                    } else if (pcMax > 0 && pcProgress >= pcMax) {
+                        "Đã đạt tối đa rổ PC ($pcProgress/$pcMax)"
+                    } else {
+                        "Đã thử nghiệm PC không tăng thêm điểm"
+                    }
                     vlogManager?.logPoints(
                         "[SKIP-PC] Bỏ qua Phase 1 (PC Search) cho ${account.email}",
                         "$reason. Chuyển sang Phase 2 (Mobile Search).",
@@ -580,7 +607,7 @@ class RewardsStateMachine(
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_2_MOBILE)) {
                     val reason = if (account.level < 2 || mobileMax == 0) {
                         "Level Gating: Tài khoản Level ${account.level} (<2) hoặc mobileMax == 0"
-                    } else if (mobileMax > 0 && mobileProgress >= mobileMax) {
+                    } else if (isMobFullInSession || (mobileMax > 0 && mobileProgress >= mobileMax)) {
                         "Đã đạt tối đa rổ Mobile ($mobileProgress/$mobileMax)"
                     } else {
                         "Đã thử nghiệm Mobile không tăng thêm điểm"
@@ -603,7 +630,7 @@ class RewardsStateMachine(
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_3_EDGE)) {
                     val reason = if (edgeMax == 0) {
                         "Không có rổ Edge Bonus (edgeMax == 0)"
-                    } else if (edgeMax > 0 && edgeProgress >= edgeMax) {
+                    } else if (isEdgeFullInSession || (edgeMax > 0 && edgeProgress >= edgeMax)) {
                         "Đã đạt tối đa rổ Edge ($edgeProgress/$edgeMax)"
                     } else {
                         "Đã thử nghiệm Edge không tăng thêm điểm"
@@ -613,6 +640,9 @@ class RewardsStateMachine(
                         "$reason. Hoàn tất tìm kiếm.",
                         account.email
                     )
+                }
+                if (!isPcDone) {
+                    return SearchPhase.PHASE_1_PC
                 }
                 return SearchPhase.DONE
             } else {
@@ -644,6 +674,8 @@ class RewardsStateMachine(
     ) {
         if (isRunning) return
         isRunning = true
+        sessionFullBasketsMap.clear()
+        sessionRecheckCountMap.clear()
         if (webView != null) {
             activeWebView = webView
         }
@@ -668,6 +700,13 @@ class RewardsStateMachine(
                                     if (prev.cooldownUntilTimestamp > dbAcc.cooldownUntilTimestamp) {
                                         dbAcc.cooldownUntilTimestamp = prev.cooldownUntilTimestamp
                                     }
+                                    dbAcc.pcProgress = maxOf(dbAcc.pcProgress, prev.pcProgress)
+                                    dbAcc.mobileProgress = maxOf(dbAcc.mobileProgress, prev.mobileProgress)
+                                    dbAcc.edgeProgress = maxOf(dbAcc.edgeProgress, prev.edgeProgress)
+                                    dbAcc.completedSearchesToday = maxOf(dbAcc.completedSearchesToday, prev.completedSearchesToday)
+                                    if (prev.pcMax > 0 && dbAcc.pcMax == 0) dbAcc.pcMax = prev.pcMax
+                                    if (prev.mobileMax > 0 && dbAcc.mobileMax == 0) dbAcc.mobileMax = prev.mobileMax
+                                    if (prev.edgeMax > 0 && dbAcc.edgeMax == 0) dbAcc.edgeMax = prev.edgeMax
                                 }
                             }
                             accountList = dbProfiles
@@ -771,6 +810,8 @@ class RewardsStateMachine(
                         checkInCompletedDateMap.remove(account.id)
                         phaseExhaustedMap.remove(account.id)
                         phaseZeroDeltaCountMap.remove(account.id)
+                        sessionFullBasketsMap.remove(account.id)
+                        sessionRecheckCountMap.remove(account.id)
                         claimAttemptCountMap.keys.removeIf { it.endsWith(":${account.id}") }
                         dapiAttemptCountMap.keys.removeIf { it.endsWith(":${account.id}") }
                         offerTriedCountMap.keys.removeIf { it.contains(":${account.id}:") }
@@ -2253,8 +2294,13 @@ class RewardsStateMachine(
                 onAccountUpdated(account)
             }
 
+            val isPcFullInSession = sessionFullBasketsMap[account.id]?.contains(SearchPhase.PHASE_1_PC) == true
+            val pcRecheckCount = sessionRecheckCountMap.getOrPut(account.id) { ConcurrentHashMap() }[SearchPhase.PHASE_1_PC] ?: 0
+            val isPcBlockedByGuard = isPcFullInSession && pcRecheckCount >= 1
+
             val isPcExhausted = (phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_1_PC) == true) ||
-                (encryptedPrefs?.isSearchExhaustedToday(account.id, todayStr) == true)
+                (encryptedPrefs?.isSearchExhaustedToday(account.id, todayStr) == true) ||
+                isPcBlockedByGuard
             val pcDeficit = if (account.pcMax > 0 && !isPcExhausted) maxOf(0, account.pcMax - account.pcProgress) else 0
             val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level >= 2) 60 else 0)
             val isMobAllowed = (account.level >= 2 && effMobMax > 0)
@@ -2280,18 +2326,14 @@ class RewardsStateMachine(
 
             vlogManager?.logPoints(
                 "[RECONCILIATION] Phát hiện thâm hụt điểm (Pass $pass/$maxReconciliationPasses)",
-                "Thâm hụt: PC: $pcDeficit pts, Mobile: $mobDeficit pts, Edge: $edgeDeficit pts (Tổng thiếu: $totalDeficit pts). Kích hoạt Surgical Micro-Catchup...",
+                "Thâm hụt: Mobile: $mobDeficit pts, Edge: $edgeDeficit pts, PC: $pcDeficit pts (Tổng thiếu: $totalDeficit pts). Kích hoạt Surgical Micro-Catchup...",
                 account.email
             )
 
             val prePassPoints = account.availablePoints
 
-            // Xác định danh sách các rổ cần bù: tối đa 2 searches cho mỗi rổ thâm hụt
+            // Xác định danh sách các rổ cần bù: Deficit-First (Mobile -> Edge -> PC)
             val deficitBaskets = mutableListOf<SearchPhase>()
-            if (pcDeficit > 0) {
-                val neededSearches = minOf(2, (pcDeficit + 2) / 3)
-                repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_1_PC) }
-            }
             if (isMobAllowed && mobDeficit > 0) {
                 val neededSearches = minOf(2, (mobDeficit + 2) / 3)
                 repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_2_MOBILE) }
@@ -2299,6 +2341,11 @@ class RewardsStateMachine(
             if (edgeDeficit > 0) {
                 val neededSearches = minOf(2, (edgeDeficit + 2) / 3)
                 repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_3_EDGE) }
+            }
+            if (pcDeficit > 0 && !isPcBlockedByGuard) {
+                val neededSearches = minOf(2, (pcDeficit + 2) / 3)
+                repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_1_PC) }
+                sessionRecheckCountMap.getOrPut(account.id) { ConcurrentHashMap() }[SearchPhase.PHASE_1_PC] = pcRecheckCount + 1
             }
 
             var passSearchesExecuted = 0
