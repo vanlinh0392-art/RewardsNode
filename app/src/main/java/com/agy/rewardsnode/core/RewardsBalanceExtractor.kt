@@ -834,6 +834,33 @@ object RewardsBalanceExtractor {
             ?.hashCode()
         val cachedIdentity = cookieKey?.let { cookieIdentityCache[it] }
 
+        fun enrichWithExactBreakdownIfNeeded(balance: ExtractedRewardsBalance): ExtractedRewardsBalance {
+            if (!balance.isSuccess) return balance
+            if (balance.level >= 2 && (balance.mobileProgress == 0 || balance.pcProgress >= balance.pcMax)) {
+                val bd = queryPointsBreakdownHttp(bingCookies, effectiveUa, proxyUrl)
+                if (bd.isSuccess) {
+                    val pcProg = bd.pcProgress
+                    val pcM = if (bd.pcMax > 0) bd.pcMax else balance.pcMax
+                    val mobProg = bd.mobileProgress
+                    val mobM = if (bd.mobileMax > 0) bd.mobileMax else balance.mobileMax
+                    val edgeProg = if (bd.edgeMax > 0) bd.edgeProgress else balance.edgeProgress
+                    val edgeM = if (bd.edgeMax > 0) bd.edgeMax else balance.edgeMax
+                    val effEarned = if (bd.offersPoints > 0) (pcProg + mobProg + edgeProg + bd.offersPoints) else balance.pointsEarnedToday
+                    return balance.copy(
+                        source = "${balance.source}+breakdown",
+                        pcProgress = pcProg,
+                        pcMax = pcM,
+                        mobileProgress = mobProg,
+                        mobileMax = mobM,
+                        edgeProgress = edgeProg,
+                        edgeMax = edgeM,
+                        pointsEarnedToday = maxOf(balance.pointsEarnedToday, effEarned)
+                    )
+                }
+            }
+            return balance
+        }
+
         // Ưu tiên Endpoint 1 (Primary): https://www.bing.com/rewards/panelflyout/getuserinfo
         // Nhanh, đầy đủ userInfo.balance, levelInfoPromotion, dailyCheckInPromotion, dailySetPromotions + hash + userId mà không bị 401
         val flyoutResult = queryFlyoutApi(FLYOUT_API_URL, bingCookies, effectiveUa, proxyUrl)
@@ -848,11 +875,11 @@ object RewardsBalanceExtractor {
             val resolvedName = flyoutResult.profileName?.takeIf { it.isNotBlank() }
                 ?: cachedTelemetry?.profileName
                 ?: cachedIdentity?.second
-            val fastResult = flyoutResult.copy(
+            val fastResult = enrichWithExactBreakdownIfNeeded(flyoutResult.copy(
                 source = "flyout_http",
                 email = resolvedEmail,
                 profileName = resolvedName
-            )
+            ))
             if (!resolvedEmail.isNullOrBlank()) {
                 latestTelemetryMap[resolvedEmail] = fastResult
                 cacheCookieIdentity(cookieKey, resolvedEmail, resolvedName)
@@ -901,11 +928,12 @@ object RewardsBalanceExtractor {
                 dailySetProgress = mergedDsProg,
                 dailySetTotal = mergedDsTotal
             )
+            val enrichedMerged = enrichWithExactBreakdownIfNeeded(merged)
             if (!mergedEmail.isNullOrBlank()) {
-                latestTelemetryMap[mergedEmail] = merged
+                latestTelemetryMap[mergedEmail] = enrichedMerged
             }
             cacheCookieIdentity(cookieKey, mergedEmail, mergedName)
-            return@withContext merged
+            return@withContext enrichedMerged
         }
 
         if (dashResult.isSuccess && (dashResult.availablePoints > 0 || dashResult.lifetimePoints > 0)) {
@@ -913,7 +941,7 @@ object RewardsBalanceExtractor {
             val resolvedName = dashResult.profileName?.takeIf { it.isNotBlank() } ?: cachedIdentity?.second
             cacheCookieIdentity(cookieKey, resolvedEmail, resolvedName)
             if (flyoutResult.dailyTasks.isNotEmpty()) {
-                return@withContext dashResult.copy(
+                return@withContext enrichWithExactBreakdownIfNeeded(dashResult.copy(
                     source = "rewards_dashboard_http+flyout_tasks",
                     email = resolvedEmail,
                     profileName = resolvedName,
@@ -921,9 +949,9 @@ object RewardsBalanceExtractor {
                     dailySetDone = flyoutResult.dailySetDone,
                     dailySetProgress = flyoutResult.dailySetProgress,
                     dailySetTotal = flyoutResult.dailySetTotal
-                )
+                ))
             }
-            return@withContext dashResult.copy(email = resolvedEmail, profileName = resolvedName)
+            return@withContext enrichWithExactBreakdownIfNeeded(dashResult.copy(email = resolvedEmail, profileName = resolvedName))
         }
 
         // Fallback Endpoint 3: https://rewards.bing.com/api/getuserinfo (chỉ gọi khi cả Flyout và Dashboard đều thất bại)
@@ -937,15 +965,16 @@ object RewardsBalanceExtractor {
                 dashResult.dailyTasks.isNotEmpty() -> dashResult.dailyTasks
                 else -> userInfoResult.dailyTasks
             }
-            return@withContext userInfoResult.copy(
+            return@withContext enrichWithExactBreakdownIfNeeded(userInfoResult.copy(
                 source = "userinfo_http",
                 email = resolvedEmail,
                 profileName = resolvedName,
                 dailyTasks = fallbackTasks
-            )
+            ))
         }
 
-        return@withContext flyoutResult.takeIf { it.isSuccess } ?: dashResult.takeIf { it.isSuccess } ?: userInfoResult
+        val finalFallback = flyoutResult.takeIf { it.isSuccess } ?: dashResult.takeIf { it.isSuccess } ?: userInfoResult
+        return@withContext enrichWithExactBreakdownIfNeeded(finalFallback)
     }
 
     private fun queryRewardsDashboard(
@@ -1179,20 +1208,48 @@ object RewardsBalanceExtractor {
             }
 
             val existing = if (!email.isNullOrBlank()) latestTelemetryMap[email] else null
-            val pcMax = existing?.pcMax ?: if (level == 1) 30 else 90
-            val pcProgress = if (parsedSearchDailyPoints != null) {
-                minOf(parsedSearchDailyPoints, pcMax)
-            } else {
-                existing?.pcProgress ?: 0
+            val breakdownFromHtml = parsePointsBreakdownHtml(unescapedBody)
+            var pcMax = existing?.pcMax ?: if (level == 1) 30 else 90
+            var pcProgress = existing?.pcProgress ?: 0
+            var mobileMax = existing?.mobileMax ?: if (level == 1) 0 else 60
+            var mobileProgress = existing?.mobileProgress ?: 0
+            var edgeMax = existing?.edgeMax ?: 0
+            var edgeProgress = existing?.edgeProgress ?: 0
+
+            if (breakdownFromHtml.isSuccess) {
+                pcProgress = breakdownFromHtml.pcProgress
+                if (breakdownFromHtml.pcMax > 0) pcMax = breakdownFromHtml.pcMax
+                mobileProgress = breakdownFromHtml.mobileProgress
+                if (breakdownFromHtml.mobileMax > 0) mobileMax = breakdownFromHtml.mobileMax
+                edgeProgress = breakdownFromHtml.edgeProgress
+                edgeMax = breakdownFromHtml.edgeMax
+            } else if (parsedSearchDailyPoints != null) {
+                val knownMob = existing?.mobileProgress ?: 0
+                if (knownMob > 0) {
+                    mobileProgress = minOf(knownMob, mobileMax)
+                    pcProgress = minOf(maxOf(0, parsedSearchDailyPoints - mobileProgress), pcMax)
+                } else if (level == 1) {
+                    pcProgress = minOf(parsedSearchDailyPoints, pcMax)
+                    mobileProgress = 0
+                } else {
+                    val existingPc = existing?.pcProgress
+                    if (existingPc != null) {
+                        pcProgress = minOf(existingPc, pcMax)
+                        if (mobileMax > 0 && parsedSearchDailyPoints > pcProgress) {
+                            mobileProgress = minOf(parsedSearchDailyPoints - pcProgress, mobileMax)
+                        } else {
+                            mobileProgress = 0
+                        }
+                    } else {
+                        pcProgress = minOf(parsedSearchDailyPoints, pcMax)
+                        if (mobileMax > 0 && parsedSearchDailyPoints > pcMax) {
+                            mobileProgress = minOf(parsedSearchDailyPoints - pcMax, mobileMax)
+                        } else {
+                            mobileProgress = 0
+                        }
+                    }
+                }
             }
-            val mobileMax = existing?.mobileMax ?: if (level == 1) 0 else 60
-            val mobileProgress = if (parsedSearchDailyPoints != null && mobileMax > 0 && parsedSearchDailyPoints > pcMax) {
-                minOf(parsedSearchDailyPoints - pcMax, mobileMax)
-            } else {
-                existing?.mobileProgress ?: 0
-            }
-            val edgeMax = existing?.edgeMax ?: 0
-            val edgeProgress = existing?.edgeProgress ?: 0
 
             val readMatch = Regex("""(?:readNews|read_to_earn|readToEarn)[^0-9]{1,10}(\d+)""").find(unescapedBody)
             val readNewsProgress = readMatch?.groupValues?.get(1)?.toIntOrNull() ?: (existing?.readNewsProgress ?: 0)
@@ -1383,6 +1440,34 @@ object RewardsBalanceExtractor {
                 ?: flyout.optJSONObject("counters")
                 ?: json.optJSONObject("counters")
                 ?: userInfo?.optJSONObject("counters")
+
+            // Đọc trực tiếp các object riêng biệt nếu Microsoft trả về counters.pcSearch / mobileSearch
+            val pcObj = counters?.optJSONObject("pcSearch")
+                ?: userStatus.optJSONObject("pcSearch")
+                ?: flyout.optJSONObject("pcSearch")
+            val mobObj = counters?.optJSONObject("mobileSearch")
+                ?: userStatus.optJSONObject("mobileSearch")
+                ?: flyout.optJSONObject("mobileSearch")
+            val edgeObj = counters?.optJSONObject("bonusSearch")
+                ?: counters?.optJSONObject("edgeSearch")
+                ?: userStatus.optJSONObject("bonusSearch")
+
+            if (pcObj != null) {
+                pcProgress = pcObj.optInt("pointProgress", pcProgress)
+                val m = pcObj.optInt("pointProgressMax", pcObj.optInt("max", 0))
+                if (m > 0) pcMax = m
+            }
+            if (mobObj != null) {
+                mobileProgress = mobObj.optInt("pointProgress", mobileProgress)
+                val m = mobObj.optInt("pointProgressMax", mobObj.optInt("max", 0))
+                if (m > 0) mobileMax = m
+            }
+            if (edgeObj != null) {
+                edgeProgress = edgeObj.optInt("pointProgress", edgeProgress)
+                val m = edgeObj.optInt("pointProgressMax", edgeObj.optInt("max", 0))
+                if (m > 0) edgeMax = m
+            }
+
             val dailyPoint = counters?.optJSONArray("dailyPoint")
                 ?: counters?.optJSONArray("DailyPoint")
             if (dailyPoint != null && dailyPoint.length() > 0) {
@@ -1542,9 +1627,26 @@ object RewardsBalanceExtractor {
                 } else if ((todaysPointsFromLevelInfo ?: 0) <= todayDailySetEarnedPoints) {
                     pcProgress = 0
                 } else {
-                    pcProgress = minOf(clampedSearchPts, effPcMax)
-                    if (effMobMax > 0 && clampedSearchPts > effPcMax) {
-                        mobileProgress = minOf(clampedSearchPts - effPcMax, effMobMax)
+                    val existingMob = if (!email.isNullOrBlank()) latestTelemetryMap[email]?.mobileProgress ?: 0 else 0
+                    if (existingMob > 0) {
+                        mobileProgress = minOf(existingMob, effMobMax)
+                        pcProgress = minOf(maxOf(0, clampedSearchPts - mobileProgress), effPcMax)
+                    } else if (level == 1) {
+                        pcProgress = minOf(clampedSearchPts, effPcMax)
+                        mobileProgress = 0
+                    } else {
+                        val existingPc = if (!email.isNullOrBlank()) latestTelemetryMap[email]?.pcProgress else null
+                        if (existingPc != null) {
+                            pcProgress = minOf(existingPc, effPcMax)
+                            if (effMobMax > 0 && clampedSearchPts > pcProgress) {
+                                mobileProgress = minOf(clampedSearchPts - pcProgress, effMobMax)
+                            }
+                        } else {
+                            pcProgress = minOf(clampedSearchPts, effPcMax)
+                            if (effMobMax > 0 && clampedSearchPts > effPcMax) {
+                                mobileProgress = minOf(clampedSearchPts - effPcMax, effMobMax)
+                            }
+                        }
                     }
                 }
             }
@@ -1856,6 +1958,87 @@ object RewardsBalanceExtractor {
             }
         } catch (e: Exception) {
             return false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    data class PointsBreakdownResult(
+        val pcProgress: Int = 0,
+        val pcMax: Int = 90,
+        val mobileProgress: Int = 0,
+        val mobileMax: Int = 60,
+        val edgeProgress: Int = 0,
+        val edgeMax: Int = 0,
+        val offersPoints: Int = 0,
+        val isSuccess: Boolean = false
+    )
+
+    fun parsePointsBreakdownHtml(html: String): PointsBreakdownResult {
+        if (html.isBlank()) return PointsBreakdownResult()
+        val pcMatch = Regex("""(?:Desktop\s*(?:Bing)?\s*search|PC\s*search|tìm\s*kiếm\s*trên\s*(?:máy\s*tính|pc))[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
+        val mobMatch = Regex("""(?:Mobile\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:thiết\s*bị\s*)?di\s*động)[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
+        val edgeMatch = Regex("""(?:Microsoft\s*Edge\s*bonus|Edge\s*bonus|thưởng\s*edge)[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
+        val offersMatch = Regex("""(?:Offers?|Other\s*activities|hoạt\s*động\s*khác)[^0-9]*?(\d+)""", RegexOption.IGNORE_CASE).find(html)
+
+        val pcProg = pcMatch?.groupValues?.get(1)?.toIntOrNull()
+        val pcMax = pcMatch?.groupValues?.get(2)?.toIntOrNull()
+        val mobProg = mobMatch?.groupValues?.get(1)?.toIntOrNull()
+        val mobMax = mobMatch?.groupValues?.get(2)?.toIntOrNull()
+        val edgeProg = edgeMatch?.groupValues?.get(1)?.toIntOrNull()
+        val edgeMax = edgeMatch?.groupValues?.get(2)?.toIntOrNull()
+        val offers = offersMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+
+        val hasFound = pcProg != null || mobProg != null
+        return PointsBreakdownResult(
+            pcProgress = pcProg ?: 0,
+            pcMax = pcMax ?: 90,
+            mobileProgress = mobProg ?: 0,
+            mobileMax = mobMax ?: 60,
+            edgeProgress = edgeProg ?: 0,
+            edgeMax = edgeMax ?: 0,
+            offersPoints = offers,
+            isSuccess = hasFound
+        )
+    }
+
+    fun queryPointsBreakdownHttp(
+        bingCookies: String,
+        userAgent: String,
+        proxyUrl: String? = null
+    ): PointsBreakdownResult {
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = URL("https://rewards.bing.com/pointsbreakdown?_ts=${System.currentTimeMillis()}")
+            val proxy = parseProxy(proxyUrl)
+            connection = (url.openConnection(proxy) as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+                instanceFollowRedirects = true
+                useCaches = false
+                if (bingCookies.isNotBlank()) {
+                    setRequestProperty("Cookie", bingCookies)
+                }
+                setRequestProperty("User-Agent", userAgent)
+                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                setRequestProperty("Accept-Encoding", "gzip, deflate")
+                setRequestProperty("Referer", "https://rewards.bing.com/")
+            }
+            val responseCode = connection.responseCode
+            if (responseCode in 200..299) {
+                val inputStream = if ("gzip".equals(connection.contentEncoding, ignoreCase = true)) {
+                    java.util.zip.GZIPInputStream(connection.inputStream)
+                } else {
+                    connection.inputStream
+                }
+                val html = inputStream.bufferedReader().use { it.readText() }
+                parsePointsBreakdownHtml(html)
+            } else {
+                PointsBreakdownResult()
+            }
+        } catch (_: Exception) {
+            PointsBreakdownResult()
         } finally {
             connection?.disconnect()
         }
