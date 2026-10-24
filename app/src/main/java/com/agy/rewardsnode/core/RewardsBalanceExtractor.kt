@@ -188,7 +188,8 @@ object RewardsBalanceExtractor {
         val streakBonusPoints: Int = 0,
         val redeemGoalTitle: String? = null,
         val redeemGoalMax: Int = 0,
-        val isAccountSuspended: Boolean = false
+        val isAccountSuspended: Boolean = false,
+        val isRewardsUser: Boolean = true
     )
 
     /**
@@ -1324,6 +1325,12 @@ object RewardsBalanceExtractor {
                 ?: json.optJSONObject("UserStatus")
                 ?: flyout
             val userInfo = json.optJSONObject("userInfo") ?: flyout.optJSONObject("userInfo")
+            val isRewardsUser = when {
+                userStatus.has("isRewardsUser") -> userStatus.optBoolean("isRewardsUser", true)
+                flyout.has("isRewardsUser") -> flyout.optBoolean("isRewardsUser", true)
+                json.has("isRewardsUser") -> json.optBoolean("isRewardsUser", true)
+                else -> true
+            }
             val rootUserId = json.optString("userId", "")
                 .ifBlank { flyout.optString("userId", "") }
                 .ifBlank { userStatus.optString("userId", "") }
@@ -1778,7 +1785,8 @@ object RewardsBalanceExtractor {
                 streakBonusPoints = streakBonusPoints,
                 redeemGoalTitle = redeemGoalTitle,
                 redeemGoalMax = redeemGoalMax,
-                isAccountSuspended = isAccountSuspended
+                isAccountSuspended = isAccountSuspended,
+                isRewardsUser = isRewardsUser
             )
             if (!email.isNullOrBlank()) {
                 latestTelemetryMap[email] = result
@@ -1786,6 +1794,70 @@ object RewardsBalanceExtractor {
             return result
         } catch (e: Exception) {
             return ExtractedRewardsBalance(isSuccess = false, source = "http_error")
+        }
+    }
+
+    /**
+     * Pre-Flight Auth Gate Checker:
+     * Kiểm tra endpoint panelflyout/getuserinfo xem phiên Bing Search hiện tại đã được Microsoft nhận diện
+     * là Rewards User (`isRewardsUser == true`) hay chưa (Issue #36 MS-Rewards-Farmer).
+     * Trả về true nếu isRewardsUser == true, false nếu isRewardsUser == false hoặc lỗi kết nối.
+     */
+    fun checkIsRewardsUser(
+        bingCookies: String?,
+        userAgent: String? = null,
+        proxyUrl: String? = null
+    ): Boolean {
+        if (bingCookies.isNullOrBlank()) return false
+        var connection: HttpURLConnection? = null
+        try {
+            val separator = if (FLYOUT_API_URL.contains("?")) "&" else "?"
+            val cacheBuster = "_ts=${System.currentTimeMillis()}&_nonce=${java.util.UUID.randomUUID().toString().take(6)}"
+            val url = URL("$FLYOUT_API_URL$separator$cacheBuster")
+            val proxy = parseProxy(proxyUrl)
+            connection = (url.openConnection(proxy) as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 6000
+                readTimeout = 6000
+                instanceFollowRedirects = true
+                useCaches = false
+                setRequestProperty("Cache-Control", "no-cache, no-store, must-revalidate")
+                setRequestProperty("Pragma", "no-cache")
+                setRequestProperty("Cookie", bingCookies)
+                setRequestProperty("User-Agent", userAgent ?: DEFAULT_DESKTOP_EDGE_UA)
+                setRequestProperty("Accept", "application/json, text/plain, */*")
+                setRequestProperty("Referer", "https://www.bing.com/")
+                setRequestProperty("X-Requested-With", "XMLHttpRequest")
+                setRequestProperty("Sec-Fetch-Site", "same-origin")
+                setRequestProperty("Sec-Fetch-Mode", "cors")
+                setRequestProperty("Sec-Fetch-Dest", "empty")
+            }
+
+            val responseCode = connection.responseCode
+            val responseBody = if (responseCode in 200..299) {
+                connection.inputStream.bufferedReader().use { it.readText() }
+            } else {
+                connection.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+            }
+
+            if (responseCode !in 200..299 || responseBody.isBlank()) {
+                return false
+            }
+
+            val json = JSONObject(responseBody)
+            val flyout = json.optJSONObject("flyoutResult") ?: json
+            val userStatus = flyout.optJSONObject("userStatus") ?: json.optJSONObject("userStatus")
+
+            return when {
+                userStatus?.has("isRewardsUser") == true -> userStatus.optBoolean("isRewardsUser", false)
+                flyout.has("isRewardsUser") -> flyout.optBoolean("isRewardsUser", false)
+                json.has("isRewardsUser") -> json.optBoolean("isRewardsUser", false)
+                else -> false
+            }
+        } catch (e: Exception) {
+            return false
+        } finally {
+            connection?.disconnect()
         }
     }
 }

@@ -426,33 +426,6 @@ class RewardsForegroundService : Service() {
             }
             activeAccountId = account.id
 
-            // Kiểm tra và tự động kích hoạt Bing SSO Handshake nếu tài khoản chưa có token _RwBf
-            if (!profileManager.hasRwBfToken(account.cookiesSnapshot)) {
-                vlogManager.logNetwork("Tài khoản chưa có _RwBf -> Kích hoạt SSO Handshake ngầm để nhận diện Rewards User", ProfileManager.BING_SSO_SIGNIN_URL, account.email)
-                suspendCancellableCoroutine<Boolean> { ssoCont ->
-                    webView.webViewClient = object : WebViewClient() {
-                        override fun onPageFinished(view: WebView?, url: String?) {
-                            val cur = url ?: ""
-                            if (cur.contains("bing.com") && !cur.contains("signin") && !cur.contains("oauth")) {
-                                CookieManager.getInstance().flush()
-                                val updatedCookies = profileManager.dumpCookiesForProfile(account.id)
-                                if (updatedCookies.isNotBlank() && profileManager.hasValidBingSession(updatedCookies)) {
-                                    account.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, updatedCookies)
-                                    serviceScope.launch(Dispatchers.IO) {
-                                        database.rewardsDao().updateProfile(account)
-                                    }
-                                }
-                                if (ssoCont.isActive) ssoCont.resume(true)
-                            }
-                        }
-                    }
-                    webView.loadUrl(ProfileManager.BING_SSO_SIGNIN_URL)
-                    mainHandler.postDelayed({
-                        if (ssoCont.isActive) ssoCont.resume(false)
-                    }, 10000L)
-                }
-            }
-
             val isDesktop = phase.isDesktop
             val preset = FingerprintEngine.getEdgePresetForAccount(account.id, isDesktop)
             webView.settings.userAgentString = preset.userAgent
@@ -468,6 +441,20 @@ class RewardsForegroundService : Service() {
 
             // Tiêm cookie xác thực Edge
             CookieManager.getInstance().setCookie("https://www.bing.com", EDGE_V_COOKIE)
+
+            // Pre-Flight Auth Gate: Đảm bảo tài khoản đã được xác thực Rewards User trên www.bing.com (Issue #36)
+            val isBingAuthOk = ensureBingSearchAuth(account, webView, preset)
+            if (!isBingAuthOk) {
+                stateMachine.markAuthDesync(account.id)
+                vlogManager.logError(
+                    "[AUTH-DESYNC] Huỷ lượt tìm kiếm cho ${account.email}",
+                    "Tài khoản không được www.bing.com nhận diện là Rewards User (isRewardsUser == false). Hủy để chống cày bù mù quáng 0 điểm.",
+                    account.email
+                )
+                return@withContext false
+            } else {
+                stateMachine.clearAuthDesync(account.id)
+            }
 
             val phaseTag = when (phase) {
                 RewardsStateMachine.SearchPhase.PHASE_1_PC -> "[SEARCH-PC]"
@@ -754,6 +741,135 @@ class RewardsForegroundService : Service() {
         } finally {
             // Giữ CPU/WiFi lock xuyên suốt inter-search jitter; chỉ nhả khi Cooldown/Stop/Complete
         }
+    }
+
+    /**
+     * Pre-Flight Auth Gate: Xác minh tài khoản được www.bing.com nhận diện là Rewards User.
+     * Dựa trên chuẩn Issue #36 của MS-Rewards-Farmer.
+     * Nếu isRewardsUser == false: tự động kích hoạt Silent SSO Handshake ngầm để lấy _RwBf và cấp quyền tìm kiếm.
+     */
+    private suspend fun ensureBingSearchAuth(
+        account: AccountProfile,
+        webView: WebView,
+        preset: FingerprintEngine.FingerprintPreset
+    ): Boolean {
+        val effectiveProxy = ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy)
+
+        // Lấy cookies hiện tại của bing.com
+        CookieManager.getInstance().flush()
+        val currentBingCookies = CookieManager.getInstance().getCookie("https://www.bing.com") ?: ""
+        val mergedCookies = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, currentBingCookies)
+
+        // 1. Kiểm tra nhanh trạng thái isRewardsUser qua endpoint nhẹ panelflyout/getuserinfo (Pure HTTP ~300ms)
+        val isRewardsUser = withContext(Dispatchers.IO) {
+            RewardsBalanceExtractor.checkIsRewardsUser(
+                bingCookies = mergedCookies,
+                userAgent = preset.userAgent,
+                proxyUrl = effectiveProxy
+            )
+        }
+
+        if (isRewardsUser) {
+            return true
+        }
+
+        vlogManager.logNetwork(
+            "[AUTH-DESYNC] Phát hiện www.bing.com chưa đồng bộ trạng thái Rewards (isRewardsUser == false)",
+            "Tài khoản: ${account.email}. Kích hoạt Silent SSO Handshake ngầm để lấy _RwBf và cấp quyền tìm kiếm...",
+            account.email
+        )
+
+        // 2. Thử Pure HTTP SSO Renewal (Không mở UI / Không chiếm WebView)
+        val renewedCookies = withContext(Dispatchers.IO) {
+            try {
+                ProfileManager.renewCookiesViaPureHttp(
+                    cookiesSnapshot = mergedCookies,
+                    userAgent = preset.userAgent,
+                    proxyUrl = effectiveProxy
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+
+        if (!renewedCookies.isNullOrBlank()) {
+            profileManager.restoreCookiesForProfile(account.id, renewedCookies)
+            CookieManager.getInstance().flush()
+            account.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, renewedCookies)
+            serviceScope.launch(Dispatchers.IO) {
+                database.rewardsDao().updateProfile(account)
+            }
+
+            // Kiểm tra lại sau Pure HTTP
+            val recheckHttp = withContext(Dispatchers.IO) {
+                val updatedBing = CookieManager.getInstance().getCookie("https://www.bing.com") ?: ""
+                RewardsBalanceExtractor.checkIsRewardsUser(
+                    bingCookies = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, updatedBing),
+                    userAgent = preset.userAgent,
+                    proxyUrl = effectiveProxy
+                )
+            }
+            if (recheckHttp) {
+                vlogManager.logNetwork(
+                    "[AUTH-SYNC] Tái xác thực Bing Search Auth thành công qua Pure HTTP",
+                    "Đã thu hoạch cookie định danh và cấp quyền tìm kiếm cho ${account.email}",
+                    account.email
+                )
+                return true
+            }
+        }
+
+        // 3. Fallback: Silent SSO Handshake qua WebView ngầm
+        vlogManager.logNetwork(
+            "[AUTH-SSO] Kích hoạt Silent SSO Handshake qua WebView cho ${account.email}",
+            ProfileManager.BING_SSO_SIGNIN_URL,
+            account.email
+        )
+
+        suspendCancellableCoroutine<Boolean> { ssoCont ->
+            webView.webViewClient = object : WebViewClient() {
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    val cur = url ?: ""
+                    if (cur.contains("bing.com") && !cur.contains("signin") && !cur.contains("oauth")) {
+                        CookieManager.getInstance().flush()
+                        val updatedCookies = profileManager.dumpCookiesForProfile(account.id)
+                        if (updatedCookies.isNotBlank() && profileManager.hasValidBingSession(updatedCookies)) {
+                            account.cookiesSnapshot = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, updatedCookies)
+                            serviceScope.launch(Dispatchers.IO) {
+                                database.rewardsDao().updateProfile(account)
+                            }
+                        }
+                        if (ssoCont.isActive) ssoCont.resume(true)
+                    }
+                }
+            }
+            webView.loadUrl(ProfileManager.BING_SSO_SIGNIN_URL)
+            mainHandler.postDelayed({
+                if (ssoCont.isActive) ssoCont.resume(false)
+            }, 12000L)
+        }
+
+        // 4. Kiểm tra lần cuối sau WebView SSO Handshake
+        CookieManager.getInstance().flush()
+        val postSsoCookies = CookieManager.getInstance().getCookie("https://www.bing.com") ?: ""
+        val finalCheck = withContext(Dispatchers.IO) {
+            RewardsBalanceExtractor.checkIsRewardsUser(
+                bingCookies = ProfileManager.mergeCookieSnapshots(account.cookiesSnapshot, postSsoCookies),
+                userAgent = preset.userAgent,
+                proxyUrl = effectiveProxy
+            )
+        }
+
+        if (finalCheck) {
+            vlogManager.logNetwork(
+                "[AUTH-SYNC] Tái xác thực Bing Search Auth thành công qua WebView SSO",
+                "Tài khoản ${account.email} đã được công nhận là Rewards User.",
+                account.email
+            )
+            return true
+        }
+
+        return false
     }
 
     private fun updateNotification(status: String, details: String) {

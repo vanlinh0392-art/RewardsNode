@@ -148,4 +148,62 @@ class MobileSearchRewardsVerificationTest {
         assertTrue("Script phải chứa requestSubmit hoặc submit", script.contains("requestSubmit"))
         assertTrue("Script phải chứa custom searchUrl mobile", script.contains("form=STARTR"))
     }
+
+    /**
+     * Test 8: Verify parse isRewardsUser từ response payload của panelflyout/getuserinfo (Issue #36).
+     */
+    @Test
+    fun test8_verifyPreFlightAuthGatePayloadParsing() {
+        val desyncJsonStr = """
+            {
+              "isRewardsUser": false,
+              "availablePoints": 0,
+              "counters": {
+                "ActivityAndQuiz": [],
+                "DailyPoint": []
+              }
+            }
+        """.trimIndent()
+        val desyncBal = com.agy.rewardsnode.core.RewardsBalanceExtractor.parseFlyoutJsonPayload(org.json.JSONObject(desyncJsonStr))
+        assertFalse("Tài khoản bị desync phải có isRewardsUser == false", desyncBal.isRewardsUser)
+
+        val authOkJsonStr = """
+            {
+              "isRewardsUser": true,
+              "availablePoints": 1500,
+              "counters": {
+                "DailyPoint": [
+                  {"name": "pc", "pointProgress": 30, "pointProgressMax": 90},
+                  {"name": "mobile", "pointProgress": 0, "pointProgressMax": 60}
+                ]
+              }
+            }
+        """.trimIndent()
+        val authOkBal = com.agy.rewardsnode.core.RewardsBalanceExtractor.parseFlyoutJsonPayload(org.json.JSONObject(authOkJsonStr))
+        assertTrue("Tài khoản hợp lệ phải có isRewardsUser == true", authOkBal.isRewardsUser)
+    }
+
+    /**
+     * Test 9: Verify StateMachine quản lý cờ Auth Desync và bảo vệ tài khoản không bị khóa oan.
+     */
+    @Test
+    fun test9_verifyRewardsStateMachineAuthDesyncAndCooldownGuards() {
+        val keywordEngine = com.agy.rewardsnode.core.KeywordEngine()
+        val sm = com.agy.rewardsnode.core.RewardsStateMachine(
+            keywordEngine = keywordEngine,
+            profileManager = null,
+            onExecuteSearch = { _, _, _ -> true },
+            onStatusUpdate = { _, _ -> },
+            onAccountUpdated = { }
+        )
+
+        val accountId = "test_acc_desync_1"
+        assertFalse(sm.isAuthDesync(accountId))
+
+        sm.markAuthDesync(accountId)
+        assertTrue("Tài khoản phải được đánh dấu auth desync", sm.isAuthDesync(accountId))
+
+        sm.clearAuthDesync(accountId)
+        assertFalse("Cờ auth desync phải được xóa sạch sau khi re-auth thành công", sm.isAuthDesync(accountId))
+    }
 }

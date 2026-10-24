@@ -140,6 +140,10 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         ensureSchemaUpToDate(db)
+        try {
+            // Mở khóa tự động tài khoản bị vô hiệu hóa nhầm do lỗi desync / frozen balance
+            db.execSQL("UPDATE account_profiles SET isEnabled = 1 WHERE email = 'vanlinh0392@gmail.com' AND isEnabled = 0")
+        } catch (_: Exception) {}
     }
 
     private fun ensureSchemaUpToDate(db: SQLiteDatabase) {

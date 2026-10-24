@@ -67,6 +67,8 @@ class RewardsStateMachine(
 
     // Tập hợp tài khoản bị phát hiện dính cờ Cooldown 15 phút (Closed-Loop Rate Limit)
     private val cooldownRestrictedAccounts = Collections.synchronizedSet(mutableSetOf<String>())
+    // Tập hợp tài khoản bị mất đồng bộ Bing Search Auth (Issue #36 isRewardsUser == false)
+    private val authDesyncAccounts = Collections.synchronizedSet(mutableSetOf<String>())
     // Bảng lưu số điểm trước batch để đo ΔPoints chính xác
     private val preBatchPointsMap = ConcurrentHashMap<String, Int>()
     // Bảng theo dõi số batch liên tiếp ΔPoints == 0 của mỗi tài khoản
@@ -444,6 +446,18 @@ class RewardsStateMachine(
 
     fun isAccountCooldownRestricted(accountId: String): Boolean {
         return cooldownRestrictedAccounts.contains(accountId)
+    }
+
+    fun markAuthDesync(accountId: String) {
+        authDesyncAccounts.add(accountId)
+    }
+
+    fun clearAuthDesync(accountId: String) {
+        authDesyncAccounts.remove(accountId)
+    }
+
+    fun isAuthDesync(accountId: String): Boolean {
+        return authDesyncAccounts.contains(accountId)
     }
 
     fun markAccountRestricted(accountId: String, restricted: Boolean) {
@@ -833,7 +847,7 @@ class RewardsStateMachine(
                     }
 
                     val isCatchingUp = account.completedSearchesToday >= account.targetSearches
-                    val maxCatchUpSearches = (account.targetSearches * 1.6).toInt()
+                    val maxCatchUpSearches = minOf(account.targetSearches + 3, (account.targetSearches * 1.6).toInt())
 
                     // Pre-flight Validation: Trước vòng cày đầu tiên, ping extractPointsViaHttp.
                     // Nếu 401/403/hết hạn, set account.cookieExpired = true, log cảnh báo và skip.
@@ -1975,6 +1989,29 @@ class RewardsStateMachine(
                                         "Tài khoản Level 2 chuyển sang thử nghiệm Mobile Search trước khi kết luận.",
                                         account.email
                                     )
+                                } else if (isAccountCooldownRestricted(account.id)) {
+                                    // Tài khoản đang trong chu kỳ Cooldown 15 phút của Microsoft -> Không khóa nick (isEnabled = false)!
+                                    vlogManager?.logCooldown(
+                                        "[COOL-HOLD] Tài khoản ${account.email} đang trong thời gian Cooldown 15 phút ($zeroCount batch ΔTotal == 0)",
+                                        "Tiếp tục bảo toàn tài khoản, duy trì Cooldown sàn toán học 920s và luân chuyển Round-Robin.",
+                                        account.email
+                                    )
+                                } else if (isAuthDesync(account.id)) {
+                                    // Tài khoản bị mất đồng bộ Bing Search Auth -> Không khóa nick (isEnabled = false)!
+                                    vlogManager?.logNetwork(
+                                        "[AUTH-DESYNC] Phát hiện mất đồng bộ Bing Search Auth cho ${account.email} ($zeroCount batch ΔTotal == 0)",
+                                        "Bảo toàn tài khoản (không khóa nick), tạm hoãn để tự động re-auth ở chu kỳ kế tiếp.",
+                                        account.email
+                                    )
+                                    cooldownRestrictedAccounts.add(account.id)
+                                } else if (account.pointsEarnedToday > 0 && zeroCount >= effFrozenStop) {
+                                    // Tài khoản hôm nay đã kiếm được điểm hợp lệ (ví dụ Phase 0 hoặc PC search) -> Không khóa nick!
+                                    cooldownRestrictedAccounts.add(account.id)
+                                    vlogManager?.logCooldown(
+                                        "[SAFE-COOLDOWN] Tài khoản ${account.email} hôm nay đã kiếm được ${account.pointsEarnedToday} điểm",
+                                        "Phát hiện số dư tạm dừng tăng ($zeroCount batch ΔTotal == 0). Áp dụng Cooldown 15 phút thay vì khóa nick.",
+                                        account.email
+                                    )
                                 } else if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
                                     // G4.4: Phát hiện Frozen Balance khi >= effFrozenStop batch liên tiếp delta == 0 dù tìm kiếm thành công
                                     vlogManager?.logError(
@@ -2092,8 +2129,20 @@ class RewardsStateMachine(
                     } else if (account.completedSearchesToday < account.targetSearches) {
                         true
                     } else {
-                        // Tự động cày bù nếu chưa đạt SearchPhase.DONE và < maxCatchUpSearches
-                        account.completedSearchesToday < maxCatchUpSearches
+                        // Chế độ cày bù: thắt chặt tối đa 2-3 lượt. Nếu gặp zero delta >= 1 hoặc cờ Cooldown / Desync -> dừng cày bù sớm!
+                        val canCatchUp = account.completedSearchesToday < maxCatchUpSearches &&
+                                (zeroDeltaBatchCountMap[account.id] ?: 0) < 1 &&
+                                !isAccountCooldownRestricted(account.id) &&
+                                !isAuthDesync(account.id)
+                        if (!canCatchUp && account.completedSearchesToday >= account.targetSearches) {
+                            vlogManager?.logCooldown(
+                                "[CATCHUP-STOP] Dừng cày bù sớm cho ${account.email} (${account.completedSearchesToday}/$maxCatchUpSearches lượt)",
+                                if (isAccountCooldownRestricted(account.id)) "Tài khoản dính Cooldown 15 phút." else "Phát hiện zero delta / desync khi cày bù. Bảo vệ tài khoản, kích hoạt Cooldown 15 phút.",
+                                account.email
+                            )
+                            cooldownRestrictedAccounts.add(account.id)
+                        }
+                        canCatchUp
                     }
 
                     if (isStillNeedingSearches && isRunning) {
