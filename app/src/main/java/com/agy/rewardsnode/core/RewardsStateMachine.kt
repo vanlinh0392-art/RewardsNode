@@ -542,7 +542,7 @@ class RewardsStateMachine(
             balance.mobileMax
         } else if (account.mobileMax > 0) {
             account.mobileMax
-        } else if (isLevel1 || (balance != null && balance.isSuccess)) {
+        } else if (isLevel1) {
             0
         } else {
             60
@@ -1713,7 +1713,7 @@ class RewardsStateMachine(
                                 }
 
                                 val keyword = keywordEngine.generateNextKeyword(account.id)
-                                val isDesktop = (activePhase == SearchPhase.PHASE_1_PC)
+                                val isDesktop = activePhase.isDesktop
                                 val preset = FingerprintEngine.getEdgePresetForAccount(account.id, isDesktop)
 
                                 val phaseLabel = activePhase.label
@@ -1887,6 +1887,8 @@ class RewardsStateMachine(
                                 val zCount = (phaseCount[activePhase] ?: 0) + 1
                                 phaseCount[activePhase] = zCount
 
+                                var isTransitioningToMobile = false
+
                                 // Nếu cày thử nghiệm một phase mà không tăng điểm:
                                 if (activePhase == SearchPhase.PHASE_2_MOBILE && zCount >= 2) {
                                     phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
@@ -1902,12 +1904,20 @@ class RewardsStateMachine(
                                         "Microsoft không cộng thêm điểm rổ Edge (ΔEdge=0). Hoàn tất tìm kiếm.",
                                         account.email
                                     )
-                                } else if (activePhase == SearchPhase.PHASE_1_PC && zCount >= 2 && account.pcProgress > 0) {
+                                } else if (activePhase == SearchPhase.PHASE_1_PC && zCount >= 2) {
                                     phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_1_PC)
                                     if (account.pcMax > 0 && account.pcProgress >= account.pcMax - 3) {
                                         encryptedPrefs?.markSearchExhaustedToday(account.id, todayStr)
                                         account.pcProgress = account.pcMax
                                         onAccountUpdated(account)
+                                    }
+
+                                    val isL2OrMob = (account.level >= 2 || account.mobileMax > 0)
+                                    val effMobQuota = if (account.mobileMax > 0) account.mobileMax else 60
+                                    if (isL2OrMob && account.mobileProgress < effMobQuota && phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_2_MOBILE) != true) {
+                                        isTransitioningToMobile = true
+                                        zeroDeltaBatchCountMap[account.id] = 0
+                                        cooldownRestrictedAccounts.remove(account.id)
                                     }
                                     vlogManager?.logPoints(
                                         "[TRIAL-PC] Đã hoàn tất thử nghiệm PC Search cho ${account.email}",
@@ -1918,7 +1928,13 @@ class RewardsStateMachine(
 
                                 val effFrozenStop = maxOf(2, frozenStopBatches)
                                 val effCooldownTrigger = maxOf(1, cooldownTriggerBatches)
-                                if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
+                                if (isTransitioningToMobile) {
+                                    vlogManager?.logCooldown(
+                                        "[TRANSITION-MOB] Bỏ qua Cooldown/Frozen Balance đợt PC cho ${account.email}",
+                                        "Tài khoản Level 2 chuyển sang thử nghiệm Mobile Search trước khi kết luận.",
+                                        account.email
+                                    )
+                                } else if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
                                     // G4.4: Phát hiện Frozen Balance khi >= effFrozenStop batch liên tiếp delta == 0 dù tìm kiếm thành công
                                     vlogManager?.logError(
                                         "[FROZEN-BALANCE] Phát hiện số dư đóng băng: $zeroCount batch liên tiếp ΔTotal == 0 dù $successfulSearchesInBatch lượt tìm kiếm thành công!",
@@ -2240,15 +2256,16 @@ class RewardsStateMachine(
             val isPcExhausted = (phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_1_PC) == true) ||
                 (encryptedPrefs?.isSearchExhaustedToday(account.id, todayStr) == true)
             val pcDeficit = if (account.pcMax > 0 && !isPcExhausted) maxOf(0, account.pcMax - account.pcProgress) else 0
-            val isMobAllowed = (account.level >= 2 && account.mobileMax > 0)
+            val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level >= 2) 60 else 0)
+            val isMobAllowed = (account.level >= 2 && effMobMax > 0)
             if (!isMobAllowed) {
                 vlogManager?.logPoints(
                     "[SKIP-MOB] [RECONCILIATION] Bỏ qua rổ Mobile trong đối soát",
-                    "Level Gating: account.level=${account.level}, mobileMax=${account.mobileMax}. Chuyển sang Phase 3 Edge hoặc kết thúc.",
+                    "Level Gating: account.level=${account.level}, mobileMax=$effMobMax. Chuyển sang Phase 3 Edge hoặc kết thúc.",
                     account.email
                 )
             }
-            val mobDeficit = if (isMobAllowed) maxOf(0, account.mobileMax - account.mobileProgress) else 0
+            val mobDeficit = if (isMobAllowed) maxOf(0, effMobMax - account.mobileProgress) else 0
             val edgeDeficit = if (account.edgeMax > 0 && account.level > 1) maxOf(0, account.edgeMax - account.edgeProgress) else 0
 
             val totalDeficit = pcDeficit + mobDeficit + edgeDeficit
