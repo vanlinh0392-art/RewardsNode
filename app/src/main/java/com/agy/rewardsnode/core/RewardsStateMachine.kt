@@ -1728,7 +1728,9 @@ class RewardsStateMachine(
                     var activePhase = evaluateNextSearchPhase(account, SearchPhase.PHASE_1_PC, loggedSkips)
 
                     var successfulSearchesInBatch = 0
-                    if (activePhase == SearchPhase.DONE || account.completedSearchesToday >= maxCatchUpSearches) {
+                    val effMobQuota = if (account.mobileMax > 0) account.mobileMax else 60
+                    val isMobilePendingL2 = account.level >= 2 && account.mobileProgress < effMobQuota && phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_2_MOBILE) != true
+                    if (activePhase == SearchPhase.DONE || (account.completedSearchesToday >= maxCatchUpSearches && !isMobilePendingL2)) {
                         if (activePhase == SearchPhase.DONE && account.completedSearchesToday < account.targetSearches) {
                             account.completedSearchesToday = account.targetSearches
                             onAccountUpdated(account)
@@ -1742,7 +1744,14 @@ class RewardsStateMachine(
                     } else {
                         val effectiveTarget = if (isCatchingUp) maxCatchUpSearches else account.targetSearches
                         val remainingSearches = effectiveTarget - account.completedSearchesToday
-                        val searchesInThisBatch = minOf(batchSize, remainingSearches)
+                        val searchesInThisBatch = if (activePhase == SearchPhase.PHASE_2_MOBILE && isMobilePendingL2) {
+                            val effMobMax = if (account.mobileMax > 0) account.mobileMax else 60
+                            val mobRemainingPoints = effMobMax - account.mobileProgress
+                            val mobRemainingSearches = maxOf(1, (mobRemainingPoints + 2) / 3)
+                            minOf(batchSize, mobRemainingSearches)
+                        } else {
+                            minOf(batchSize, remainingSearches)
+                        }
 
                         if (searchesInThisBatch > 0) {
                             for (i in 1..searchesInThisBatch) {
@@ -1941,12 +1950,22 @@ class RewardsStateMachine(
 
                                 // Nếu cày thử nghiệm một phase mà không tăng điểm:
                                 if (activePhase == SearchPhase.PHASE_2_MOBILE && zCount >= 2) {
-                                    phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
-                                    vlogManager?.logPoints(
-                                        "[TRIAL-MOB] Đã hoàn tất thử nghiệm Mobile Search cho ${account.email}",
-                                        "Microsoft không cộng thêm điểm rổ Mobile (ΔMobile=0). Chuyển sang Phase 3 (Edge).",
-                                        account.email
-                                    )
+                                    if (account.mobileProgress > 0) {
+                                        phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
+                                        vlogManager?.logPoints(
+                                            "[TRIAL-MOB] Đã hoàn tất thử nghiệm Mobile Search cho ${account.email}",
+                                            "Microsoft không cộng thêm điểm rổ Mobile (ΔMobile=0). Chuyển sang Phase 3 (Edge).",
+                                            account.email
+                                        )
+                                    } else {
+                                        // Rổ Mobile vẫn 0/60 -> Do dính Cooldown từ PC. KHÔNG latch exhausted, đưa vào Cooldown 15m để cày lại sau.
+                                        cooldownRestrictedAccounts.add(account.id)
+                                        vlogManager?.logCooldown(
+                                            "[COOL-MOB] Tạm hoãn Mobile Search cho ${account.email} (0/60 điểm)",
+                                            "Microsoft tạm dừng tính điểm do Cooldown 15 phút từ PC. Bảo toàn rổ điểm, nghỉ 15 phút trước khi thử lại.",
+                                            account.email
+                                        )
+                                    }
                                 } else if (activePhase == SearchPhase.PHASE_3_EDGE && zCount >= 2) {
                                     phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_3_EDGE)
                                     vlogManager?.logPoints(
@@ -2008,54 +2027,16 @@ class RewardsStateMachine(
                                         account.email
                                     )
                                 } else if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
-                                    // G4.4: Phát hiện Frozen Balance khi >= effFrozenStop batch liên tiếp delta == 0 dù tìm kiếm thành công
-                                    vlogManager?.logError(
-                                        "[FROZEN-BALANCE] Phát hiện số dư đóng băng: $zeroCount batch liên tiếp ΔTotal == 0 dù $successfulSearchesInBatch lượt tìm kiếm thành công!",
-                                        "Tự động vô hiệu hóa tài khoản ${account.email}, gửi cảnh báo Telegram và giải phóng session an toàn.",
+                                    // Thay vì khóa nick oan khi dính Cooldown của Microsoft, chuyển sang Safe Cooldown 15 phút để bảo vệ tài khoản
+                                    cooldownRestrictedAccounts.add(account.id)
+                                    vlogManager?.logCooldown(
+                                        "[SAFE-COOLDOWN] Tài khoản ${account.email} tạm dừng tăng điểm ($zeroCount batch ΔTotal == 0 dù $successfulSearchesInBatch lượt tìm kiếm thành công)",
+                                        "Kích hoạt Cooldown 15 phút an toàn thay vì khóa nick. Bảo toàn tài khoản và xoay vòng Round-Robin.",
                                         account.email
                                     )
-
-                                    val currentView = currentWebView ?: activeWebView ?: webViewProvider?.invoke()
-                                    val screenshot = withContext(AndroidMainDispatcher) {
-                                        TelegramNotifier.captureBitmap(currentView)
-                                    }
-                                    val alertCaption = "🚨 *CẢNH BÁO SỐ DƯ ĐÓNG BĂNG (FROZEN BALANCE)*\n" +
-                                            "👤 Tài khoản: `${account.email}`\n" +
-                                            "⚠️ Chi tiết: $zeroCount batch liên tiếp ΔTotal = 0 dù tìm kiếm hợp lệ ($successfulSearchesInBatch lượt)\n" +
-                                            "🛑 Hành động: Tự động khóa nick (account.isEnabled = false) và xóa sạch session để bảo vệ điểm."
-
-                                    try {
-                                        if (screenshot != null && telegramNotifier != null) {
-                                            telegramNotifier.sendScreenshot(screenshot, alertCaption)
-                                        } else if (telegramNotifier != null) {
-                                            telegramNotifier.sendMessage(alertCaption)
-                                        }
-                                    } catch (te: Exception) {
-                                        if (te is kotlinx.coroutines.CancellationException) throw te
-                                        android.util.Log.e("RewardsStateMachine", "Lỗi gửi alert Telegram Frozen Balance: ${te.message}")
-                                    } finally {
-                                        if (screenshot != null && !screenshot.isRecycled) {
-                                            screenshot.recycle()
-                                        }
-                                    }
-
-                                    onAnomalyDetected?.invoke(account, "FROZEN_BALANCE", currentView)
-
-                                    // Fail-safe: Tự động vô hiệu hóa tài khoản và giải phóng session
-                                    account.isEnabled = false
-                                    onAccountUpdated(account)
-                                    profileManager?.clearActiveSession(currentView)
-                                    profileManager?.resetActiveSession()
-                                    activeSessionAccountId = null
-
                                     onStatusUpdate(
-                                        "Tài khoản ${account.email} đã dừng",
-                                        "Tự động khóa nick do Frozen Balance ($zeroCount batch ΔTotal = 0)"
-                                    )
-                                    vlogManager?.logPoints(
-                                        "[SAFETY-HALT] Đã cách ly an toàn tài khoản ${account.email}",
-                                        "Tài khoản đã bị vô hiệu hóa (isEnabled = false) để chống burn nick.",
-                                        account.email
+                                        "Tài khoản ${account.email} tạm nghỉ Cooldown",
+                                        "Phát hiện số dư tạm dừng tăng ($zeroCount batch ΔTotal = 0). Tự động nghỉ 15 phút."
                                     )
                                     continue
                                 } else if (zeroCount >= effCooldownTrigger) {
