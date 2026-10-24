@@ -37,9 +37,12 @@ class CooldownAlarmReceiver : BroadcastReceiver() {
                 val serviceIntent = Intent(context, RewardsForegroundService::class.java).apply {
                     this.action = targetAction
                     putExtra("is_scheduled_check", isDailyReset)
+                    val explicitTargetId = intent.getStringExtra(RewardsForegroundService.EXTRA_TARGET_ACCOUNT_ID)
+                    if (!explicitTargetId.isNullOrBlank()) {
+                        putExtra(RewardsForegroundService.EXTRA_TARGET_ACCOUNT_ID, explicitTargetId)
+                    }
                     if (!accountId.isNullOrBlank()) {
                         putExtra(EXTRA_ACCOUNT_ID, accountId)
-                        putExtra(RewardsForegroundService.EXTRA_TARGET_ACCOUNT_ID, accountId)
                     }
                 }
 

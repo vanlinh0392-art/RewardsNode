@@ -2248,9 +2248,9 @@ class RewardsStateMachine(
                     }
                 }
 
-                // Single-Account Target: Nếu khác null, chỉ chạy duy nhất account đó rồi kết thúc
-                if (!targetAccountId.isNullOrBlank()) {
-                    vlogManager?.logSystem("Hoàn tất Single-Account Target", "Đã xử lý xong tài khoản $targetAccountId. Dừng điều phối.")
+                // Single-Account Target: Chỉ dừng khi tài khoản đã thực sự HOÀN THÀNH TOÀN BỘ CHỈ TIÊU TRONG NGÀY
+                if (!targetAccountId.isNullOrBlank() && allAccountsFinished) {
+                    vlogManager?.logSystem("Hoàn tất Single-Account Target", "Đã hoàn thành toàn bộ chỉ tiêu cho tài khoản $targetAccountId. Dừng điều phối.")
                     onStatusUpdate("Hoàn tất điều phối", "Chạy xong tài khoản duy nhất.")
                     isRunning = false
                     break

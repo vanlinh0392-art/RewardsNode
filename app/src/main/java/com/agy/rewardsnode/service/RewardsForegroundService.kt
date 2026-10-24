@@ -180,7 +180,6 @@ class RewardsForegroundService : Service() {
                     startForeground(App.NOTIFICATION_ID, wakeupNotification)
                 }
                 val targetAccountId = intent.getStringExtra(EXTRA_TARGET_ACCOUNT_ID)
-                    ?: intent.getStringExtra(CooldownAlarmReceiver.EXTRA_ACCOUNT_ID)
                 val isScheduledCheck = intent.getBooleanExtra("is_scheduled_check", false)
                 if (stateMachine.isWaitingForAlarm() && !isScheduledCheck) {
                     stateMachine.notifyAlarmWakeup()
