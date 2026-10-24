@@ -748,13 +748,8 @@ class RewardsForegroundService : Service() {
 
                 mainHandler.postDelayed(timeoutRunnable, 45000L)
 
-                if (phase == RewardsStateMachine.SearchPhase.PHASE_2_MOBILE) {
-                    vlogManager.logNetwork("$phaseTag Điều hướng trực tiếp SERP Bing Mobile (Omnibox Direct Navigation)", "URL: $searchUrl | Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
-                    webView.loadUrl(searchUrl, extraHeaders)
-                } else {
-                    vlogManager.logNetwork("$phaseTag Tải trang chủ Bing để bắt đầu tìm kiếm người thật", "Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
-                    webView.loadUrl("https://www.bing.com/", extraHeaders)
-                }
+                vlogManager.logNetwork("$phaseTag Tải trang chủ Bing để bắt đầu tìm kiếm người thật", "Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
+                webView.loadUrl("https://www.bing.com/", extraHeaders)
             }
         } finally {
             // Giữ CPU/WiFi lock xuyên suốt inter-search jitter; chỉ nhả khi Cooldown/Stop/Complete

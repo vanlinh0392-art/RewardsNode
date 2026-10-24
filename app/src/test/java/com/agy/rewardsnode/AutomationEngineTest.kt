@@ -15,10 +15,14 @@ class AutomationEngineTest {
         assertTrue(script.contains("sb_form_q"))
         assertTrue(script.contains("textarea[name=\"q\"]"))
         assertTrue(script.contains("input[name=\"q\"]"))
+        assertTrue(script.contains("input[type=\"search\"]"))
         assertTrue(script.contains("form#sb_form"))
+        assertTrue(script.contains("form[action*=\"search\"]"))
+        assertTrue(script.contains("input.form"))
 
         // Buttons & Submit selectors
         assertTrue(script.contains("sb_form_go"))
+        assertTrue(script.contains("button[type=\"submit\"]"))
         assertTrue(script.contains(".search.icon"))
 
         // Events

@@ -46,7 +46,7 @@ object AutomationEngine {
             (function() {
                 var searchUrl = $urlExpression;
                 var fallbackUrl = searchUrl;
-                var input = document.getElementById('sb_form_q') || document.querySelector('textarea[name="q"]') || document.querySelector('input[name="q"]');
+                var input = document.getElementById('sb_form_q') || document.querySelector('textarea[name="q"]') || document.querySelector('input[name="q"]') || document.querySelector('input[type="search"]');
                 if (!input) {
                     window.location.href = fallbackUrl;
                     return;
@@ -136,8 +136,8 @@ object AutomationEngine {
                         } catch(e) {}
 
                         setTimeout(function() {
-                            var form = document.querySelector('form#sb_form') || document.getElementById('sb_form') || input.form;
-                            var btn = document.getElementById('sb_form_go') || document.querySelector('label[for="sb_form_go"]') || document.querySelector('.search.icon');
+                            var form = document.querySelector('form#sb_form') || document.getElementById('sb_form') || document.querySelector('form[action*="search"]') || (input ? input.form : null);
+                            var btn = document.getElementById('sb_form_go') || document.querySelector('button[type="submit"]') || document.querySelector('label[for="sb_form_go"]') || document.querySelector('.search.icon');
                             
                             function triggerFallbackTimer() {
                                 setTimeout(function() {
@@ -151,7 +151,11 @@ object AutomationEngine {
                                 btn.click();
                                 triggerFallbackTimer();
                             } else if (form) {
-                                form.submit();
+                                if (form.requestSubmit) {
+                                    try { form.requestSubmit(); } catch(e) { form.submit(); }
+                                } else {
+                                    form.submit();
+                                }
                                 triggerFallbackTimer();
                             } else {
                                 window.location.href = fallbackUrl;

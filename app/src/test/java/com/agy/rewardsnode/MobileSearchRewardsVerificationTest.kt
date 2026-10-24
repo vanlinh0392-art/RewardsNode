@@ -132,4 +132,20 @@ class MobileSearchRewardsVerificationTest {
         assertTrue("Script phải chứa pointerType: 'touch'", script.contains("pointerType: 'touch'"))
         assertTrue("Script phải chứa cuộn scrollBy", script.contains("window.scrollBy"))
     }
+
+    /**
+     * Test 7: Verify AutomationEngine.createHumanTypingScript hỗ trợ đầy đủ selectors Mobile và Desktop.
+     */
+    @Test
+    fun test7_verifyMobileHumanTypingScriptFallbackSelectors() {
+        val mobileUrl = RewardsForegroundService.buildSearchUrl("khám phá vũ trụ", SearchPhase.PHASE_2_MOBILE)
+        val script = AutomationEngine.createHumanTypingScript("khám phá vũ trụ", mobileUrl)
+
+        assertTrue("Script phải chứa input[type=\"search\"] cho Mobile fallback", script.contains("input[type=\"search\"]"))
+        assertTrue("Script phải chứa form[action*=\"search\"]", script.contains("form[action*=\"search\"]"))
+        assertTrue("Script phải chứa button[type=\"submit\"]", script.contains("button[type=\"submit\"]"))
+        assertTrue("Script phải chứa input.form fallback", script.contains("input ? input.form : null"))
+        assertTrue("Script phải chứa requestSubmit hoặc submit", script.contains("requestSubmit"))
+        assertTrue("Script phải chứa custom searchUrl mobile", script.contains("form=STARTR"))
+    }
 }
