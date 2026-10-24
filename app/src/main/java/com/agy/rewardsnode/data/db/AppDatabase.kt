@@ -69,6 +69,8 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 readMax INTEGER NOT NULL DEFAULT 30,
                 puzzleProgress INTEGER NOT NULL DEFAULT 0,
                 cooldownUntilTimestamp INTEGER NOT NULL DEFAULT 0,
+                searchWindowStartMs INTEGER NOT NULL DEFAULT 0,
+                searchesInWindow INTEGER NOT NULL DEFAULT 0,
                 dapiAccessToken TEXT,
                 dapiRefreshToken TEXT,
                 dapiTokenExpiryTimestampMs INTEGER NOT NULL DEFAULT 0
@@ -167,6 +169,8 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
         safeAddColumn(db, "account_profiles", "readMax", "INTEGER NOT NULL DEFAULT 30")
         safeAddColumn(db, "account_profiles", "puzzleProgress", "INTEGER NOT NULL DEFAULT 0")
         safeAddColumn(db, "account_profiles", "cooldownUntilTimestamp", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "searchWindowStartMs", "INTEGER NOT NULL DEFAULT 0")
+        safeAddColumn(db, "account_profiles", "searchesInWindow", "INTEGER NOT NULL DEFAULT 0")
         safeAddColumn(db, "account_profiles", "dapiAccessToken", "TEXT")
         safeAddColumn(db, "account_profiles", "dapiRefreshToken", "TEXT")
         safeAddColumn(db, "account_profiles", "dapiTokenExpiryTimestampMs", "INTEGER NOT NULL DEFAULT 0")
@@ -291,6 +295,8 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 readMax = getIntSafe(cursor, "readMax", 30),
                 puzzleProgress = getIntSafe(cursor, "puzzleProgress", 0),
                 cooldownUntilTimestamp = getLongSafe(cursor, "cooldownUntilTimestamp", 0L),
+                searchWindowStartMs = getLongSafe(cursor, "searchWindowStartMs", 0L),
+                searchesInWindow = getIntSafe(cursor, "searchesInWindow", 0),
                 dapiAccessToken = SecureColumnCrypto.decrypt(getStringSafe(cursor, "dapiAccessToken")),
                 dapiRefreshToken = SecureColumnCrypto.decrypt(getStringSafe(cursor, "dapiRefreshToken")),
                 dapiTokenExpiryTimestampMs = getLongSafe(cursor, "dapiTokenExpiryTimestampMs", 0L)
@@ -367,6 +373,8 @@ class AppDatabase private constructor(context: Context) : SQLiteOpenHelper(conte
                 put("readMax", profile.readMax)
                 put("puzzleProgress", profile.puzzleProgress)
                 put("cooldownUntilTimestamp", profile.cooldownUntilTimestamp)
+                put("searchWindowStartMs", profile.searchWindowStartMs)
+                put("searchesInWindow", profile.searchesInWindow)
                 put("dapiAccessToken", SecureColumnCrypto.encrypt(profile.dapiAccessToken))
                 put("dapiRefreshToken", SecureColumnCrypto.encrypt(profile.dapiRefreshToken))
                 put("dapiTokenExpiryTimestampMs", profile.dapiTokenExpiryTimestampMs)

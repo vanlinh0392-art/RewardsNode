@@ -37,6 +37,8 @@ data class AccountProfile(
     var readMax: Int = 0,
     var puzzleProgress: Int = 0,
     var cooldownUntilTimestamp: Long = 0L,
+    var searchWindowStartMs: Long = 0L,
+    var searchesInWindow: Int = 0,
     var dapiAccessToken: String? = null,
     var dapiRefreshToken: String? = null,
     var dapiTokenExpiryTimestampMs: Long = 0L,
