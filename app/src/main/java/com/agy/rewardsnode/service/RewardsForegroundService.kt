@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.webkit.*
+import android.view.View
 import com.agy.rewardsnode.App
 import com.agy.rewardsnode.core.AutomationEngine
 import com.agy.rewardsnode.core.DataSaverWebViewClient
@@ -344,10 +345,12 @@ class RewardsForegroundService : Service() {
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.javaScriptCanOpenWindowsAutomatically = true
                 settings.setSupportMultipleWindows(false)
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
                 FingerprintEngine.stripXRequestedWith(this)
                 measure(
-                    android.view.View.MeasureSpec.makeMeasureSpec(1080, android.view.View.MeasureSpec.EXACTLY),
-                    android.view.View.MeasureSpec.makeMeasureSpec(1920, android.view.View.MeasureSpec.EXACTLY)
+                    View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
                 )
                 layout(0, 0, 1080, 1920)
             }
@@ -450,9 +453,21 @@ class RewardsForegroundService : Service() {
                 }
             }
 
-            val isDesktop = (phase == RewardsStateMachine.SearchPhase.PHASE_1_PC)
+            val isDesktop = phase.isDesktop
             val preset = FingerprintEngine.getEdgePresetForAccount(account.id, isDesktop)
             webView.settings.userAgentString = preset.userAgent
+
+            // Đo và layout WebView theo kích thước thực tế
+            val w = if (isDesktop) 1920 else preset.screenWidth
+            val h = if (isDesktop) 1080 else preset.screenHeight
+            webView.measure(
+                View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+                View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
+            )
+            webView.layout(0, 0, w, h)
+
+            // Tiêm cookie xác thực Edge
+            CookieManager.getInstance().setCookie("https://www.bing.com", EDGE_V_COOKIE)
 
             val phaseTag = when (phase) {
                 RewardsStateMachine.SearchPhase.PHASE_1_PC -> "[SEARCH-PC]"
@@ -463,14 +478,8 @@ class RewardsForegroundService : Service() {
             val phaseLabel = phase.label
             vlogManager.logSearch("$phaseTag Bắt đầu lượt tìm kiếm cho ${account.email}", "[$phaseLabel] Từ khóa: \"$keyword\" (${preset.id})", account.email)
 
-            val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
-            val searchUrl = when (phase) {
-                RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
-                RewardsStateMachine.SearchPhase.PHASE_2_MOBILE -> "https://www.bing.com/search?q=$encodedKeyword&form=STARTR&PC=EMMX01"
-                RewardsStateMachine.SearchPhase.PHASE_3_EDGE -> "https://www.bing.com/search?q=$encodedKeyword&form=MA13FW&pc=EUPH"
-                else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
-            }
-            val extraHeaders = mapOf("Referer" to "https://www.bing.com/")
+            val searchUrl = buildSearchUrl(keyword, phase)
+            val extraHeaders = buildExtraHeaders(preset, isDesktop)
 
             return@withContext suspendCancellableCoroutine { continuation ->
                 val isCompleted = java.util.concurrent.atomic.AtomicBoolean(false)
@@ -664,8 +673,8 @@ class RewardsForegroundService : Service() {
                                 val effectiveDelta = if (zeroCount > 0) 0 else 1
                                 val dwellTimeMs = AutomationEngine.computeDynamicDwellTime(deltaPoints = effectiveDelta, isRestricted = isRestricted)
 
-                                vlogManager.logDom("Tải xong kết quả tìm kiếm. Giữ trang (${dwellTimeMs / 1000}s), cuộn rời rạc & phát MotionEvent native", account = account.email)
-                                val scrollScript = AutomationEngine.createDiscreteScrollScript()
+                                vlogManager.logDom("Tải xong kết quả tìm kiếm. Giữ trang (${dwellTimeMs / 1000}s), ${if (isDesktop) "cuộn rời rạc" else "tương tác chạm cảm ứng (DOM Touch)"} & phát MotionEvent native", account = account.email)
+                                val scrollScript = if (isDesktop) AutomationEngine.createDiscreteScrollScript() else AutomationEngine.createMobileTouchInteractionScript()
                                 AutomationEngine.dispatchNativeKineticScroll(view, 750f, 350f, 300L)
 
                                 // Bóc tách piggyback suggestions từ DOM SERP đưa vào KeywordEngine
@@ -739,8 +748,13 @@ class RewardsForegroundService : Service() {
 
                 mainHandler.postDelayed(timeoutRunnable, 45000L)
 
-                vlogManager.logNetwork("$phaseTag Tải trang chủ Bing để bắt đầu tìm kiếm người thật", "Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
-                webView.loadUrl("https://www.bing.com/", extraHeaders)
+                if (phase == RewardsStateMachine.SearchPhase.PHASE_2_MOBILE) {
+                    vlogManager.logNetwork("$phaseTag Điều hướng trực tiếp SERP Bing Mobile (Omnibox Direct Navigation)", "URL: $searchUrl | Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
+                    webView.loadUrl(searchUrl, extraHeaders)
+                } else {
+                    vlogManager.logNetwork("$phaseTag Tải trang chủ Bing để bắt đầu tìm kiếm người thật", "Proxy: ${ProfileManager.resolveEffectiveProxy(account.proxyUrl, prefs.globalProxy) ?: "Direct"}", account.email)
+                    webView.loadUrl("https://www.bing.com/", extraHeaders)
+                }
             }
         } finally {
             // Giữ CPU/WiFi lock xuyên suốt inter-search jitter; chỉ nhả khi Cooldown/Stop/Complete
@@ -861,8 +875,32 @@ class RewardsForegroundService : Service() {
         const val EXTRA_TARGET_ACCOUNT_ID = "extra_target_account_id"
         const val RC_COOLDOWN_ALARM = 1001
         const val RC_DAILY_SCHEDULE_ALARM = 1002
+        const val EDGE_V_COOKIE = "_EDGE_V=1; path=/; domain=.bing.com"
         val runningAccountIdFlow = MutableStateFlow<String?>(null)
         @Volatile var serviceStartElapsedRealtime: Long = 0L
+
+        fun buildSearchUrl(keyword: String, phase: RewardsStateMachine.SearchPhase): String {
+            val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
+            return when (phase) {
+                RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+                RewardsStateMachine.SearchPhase.PHASE_2_MOBILE -> "https://www.bing.com/search?q=$encodedKeyword&form=STARTR&PC=EMMX01"
+                RewardsStateMachine.SearchPhase.PHASE_3_EDGE -> "https://www.bing.com/search?q=$encodedKeyword&form=MA13FW&pc=EUPH"
+                else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+            }
+        }
+
+        fun buildExtraHeaders(preset: FingerprintEngine.FingerprintPreset, isDesktop: Boolean): Map<String, String> {
+            val extraHeaders = mutableMapOf(
+                "Referer" to "https://www.bing.com/",
+                "sec-ch-ua" to preset.secChUa,
+                "sec-ch-ua-mobile" to if (isDesktop) "?0" else "?1",
+                "sec-ch-ua-platform" to preset.secChUaPlatform
+            )
+            if (!isDesktop && preset.secChUaModel.isNotBlank()) {
+                extraHeaders["sec-ch-ua-model"] = preset.secChUaModel
+            }
+            return extraHeaders
+        }
 
         /**
          * Tính toán mốc thời gian kích hoạt gần nhất trong tương lai từ danh sách 1-3 khung giờ hẹn hàng ngày.

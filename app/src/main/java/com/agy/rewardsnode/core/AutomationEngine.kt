@@ -387,4 +387,133 @@ object AutomationEngine {
     fun createPointsExtractorScript(): String {
         return RewardsBalanceExtractor.createExtractionScript()
     }
+
+    /**
+     * Kịch bản mô phỏng tương tác chạm cảm ứng (Synthetic Touch & Pointer Events) trên thiết bị di động.
+     * Phát chuỗi touchstart -> touchmove -> touchend và pointerdown -> pointermove -> pointerup
+     * kết hợp cuộn tự nhiên ngẫu nhiên trên SERP Bing Mobile để kích hoạt telemetry Microsoft Rewards.
+     */
+    fun createMobileTouchInteractionScript(): String {
+        return """
+            (function() {
+                try {
+                    var totalInteractions = Math.floor(Math.random() * 3) + 2; // 2 đến 4 lượt chạm/vuốt
+                    var current = 0;
+
+                    function dispatchSyntheticTouch(startX, startY, endX, endY, duration, onDone) {
+                        var target = document.elementFromPoint(startX, startY) || document.body || document.documentElement;
+                        var identifier = Math.floor(Math.random() * 1000) + 1;
+
+                        function makeTouch(x, y) {
+                            if (typeof Touch !== 'undefined') {
+                                try {
+                                    return new Touch({
+                                        identifier: identifier,
+                                        target: target,
+                                        clientX: x,
+                                        clientY: y,
+                                        screenX: x,
+                                        screenY: y,
+                                        pageX: x + (window.pageXOffset || 0),
+                                        pageY: y + (window.pageYOffset || 0)
+                                    });
+                                } catch (e) {}
+                            }
+                            return {
+                                identifier: identifier,
+                                target: target,
+                                clientX: x,
+                                clientY: y,
+                                screenX: x,
+                                screenY: y,
+                                pageX: x + (window.pageXOffset || 0),
+                                pageY: y + (window.pageYOffset || 0)
+                            };
+                        }
+
+                        function fireTouch(type, touch) {
+                            try {
+                                if (typeof TouchEvent !== 'undefined') {
+                                    var touchList = [touch];
+                                    var evt = new TouchEvent(type, {
+                                        bubbles: true,
+                                        cancelable: true,
+                                        touches: type === 'touchend' ? [] : touchList,
+                                        targetTouches: type === 'touchend' ? [] : touchList,
+                                        changedTouches: [touch]
+                                    });
+                                    target.dispatchEvent(evt);
+                                }
+                            } catch (e1) {}
+
+                            try {
+                                var pointerType = type === 'touchstart' ? 'pointerdown' : (type === 'touchmove' ? 'pointermove' : 'pointerup');
+                                if (typeof PointerEvent !== 'undefined') {
+                                    var pEvt = new PointerEvent(pointerType, {
+                                        bubbles: true,
+                                        cancelable: true,
+                                        pointerType: 'touch',
+                                        clientX: touch.clientX,
+                                        clientY: touch.clientY,
+                                        isPrimary: true
+                                    });
+                                    target.dispatchEvent(pEvt);
+                                }
+                            } catch (e2) {}
+                        }
+
+                        var initialTouch = makeTouch(startX, startY);
+                        fireTouch('touchstart', initialTouch);
+
+                        var steps = 8;
+                        var stepIdx = 0;
+                        var stepInterval = Math.max(16, Math.floor(duration / steps));
+                        var prevY = startY;
+
+                        var intervalId = setInterval(function() {
+                            stepIdx++;
+                            var progress = Math.min(stepIdx / steps, 1);
+                            var curX = startX + (endX - startX) * progress;
+                            var curY = startY + (endY - startY) * progress;
+                            var moveTouch = makeTouch(curX, curY);
+                            fireTouch('touchmove', moveTouch);
+
+                            var deltaY = prevY - curY;
+                            if (deltaY !== 0) {
+                                window.scrollBy(0, deltaY);
+                            }
+                            prevY = curY;
+
+                            if (stepIdx >= steps) {
+                                clearInterval(intervalId);
+                                var endTouch = makeTouch(endX, endY);
+                                fireTouch('touchend', endTouch);
+                                if (onDone) onDone();
+                            }
+                        }, stepInterval);
+                    }
+
+                    function triggerNextTouch() {
+                        if (current >= totalInteractions) return;
+                        current++;
+
+                        var w = window.innerWidth || 393;
+                        var h = window.innerHeight || 852;
+                        var startX = Math.floor(w * 0.3) + Math.floor(Math.random() * (w * 0.4));
+                        var startY = Math.floor(h * 0.6) + Math.floor(Math.random() * (h * 0.2));
+                        var endX = startX + Math.floor(Math.random() * 40) - 20;
+                        var endY = startY - (Math.floor(Math.random() * 200) + 150);
+                        var duration = Math.floor(Math.random() * 150) + 250;
+
+                        dispatchSyntheticTouch(startX, startY, endX, endY, duration, function() {
+                            var pause = Math.floor(Math.random() * 800) + 700;
+                            setTimeout(triggerNextTouch, pause);
+                        });
+                    }
+
+                    setTimeout(triggerNextTouch, Math.floor(Math.random() * 400) + 300);
+                } catch (e) {}
+            })();
+        """.trimIndent()
+    }
 }

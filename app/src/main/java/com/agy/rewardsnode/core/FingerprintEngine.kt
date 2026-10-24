@@ -545,6 +545,18 @@ object FingerprintEngine {
                         }
                     } catch (e4) {}
 
+                    ${if (!isDesktop) """
+                    // 4b. Ghi đè innerWidth, innerHeight & devicePixelRatio trên Mobile
+                    try {
+                        var getInnerW = cloak(function() { return ${preset.screenWidth}; }, 'get innerWidth', 0);
+                        var getInnerH = cloak(function() { return ${preset.screenHeight}; }, 'get innerHeight', 0);
+                        var getDpr = cloak(function() { return 3.0; }, 'get devicePixelRatio', 0);
+                        Object.defineProperty(window, 'innerWidth', { get: getInnerW, configurable: true });
+                        Object.defineProperty(window, 'innerHeight', { get: getInnerH, configurable: true });
+                        Object.defineProperty(window, 'devicePixelRatio', { get: getDpr, configurable: true });
+                    } catch (eDim) {}
+                    """.trimIndent() else ""}
+
                     // 5. Ghi đè userAgent & appVersion
                     try {
                         var getUa = cloak(function() { return '${preset.userAgent}'; }, 'get userAgent', 0);
@@ -632,10 +644,10 @@ object FingerprintEngine {
                         }
                     } catch (e6) {}
 
-                    // 7. Bảo vệ maxTouchPoints trên Mobile
                     ${if (!isDesktop) """
+                    // 7. Bảo vệ maxTouchPoints, ontouchstart & TouchEvent/PointerEvent trên Mobile
                     try {
-                        var getTouch = cloak(function() { return 10; }, 'get maxTouchPoints', 0);
+                        var getTouch = cloak(function() { return 5; }, 'get maxTouchPoints', 0);
                         Object.defineProperty(navigator, 'maxTouchPoints', {
                             get: getTouch,
                             configurable: true
@@ -645,6 +657,13 @@ object FingerprintEngine {
                                 get: getTouch,
                                 configurable: true
                             });
+                        }
+                        window.ontouchstart = null;
+                        if (typeof TouchEvent === 'undefined') {
+                            window.TouchEvent = function TouchEvent() {};
+                        }
+                        if (typeof PointerEvent === 'undefined') {
+                            window.PointerEvent = function PointerEvent() {};
                         }
                     } catch (eTouch) {}
                     """.trimIndent() else ""}
