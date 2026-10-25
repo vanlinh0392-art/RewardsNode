@@ -220,7 +220,6 @@ class AccountAdapter(
 
             // 2. Lấy dữ liệu telemetry từ RAM cache nếu có (phục vụ Daily Set & Claim point bonus)
             val telemetry = RewardsBalanceExtractor.latestTelemetryMap[account.id]
-                ?: RewardsBalanceExtractor.latestTelemetryMap[account.email]
 
             if (telemetry != null && telemetry.monthlyLevelMax > 0) {
                 tvLevel.text = "Level ${account.level} (${telemetry.monthlyLevelProgress}/${telemetry.monthlyLevelMax}) • ${String.format("%,d pts", displayPoints)}"

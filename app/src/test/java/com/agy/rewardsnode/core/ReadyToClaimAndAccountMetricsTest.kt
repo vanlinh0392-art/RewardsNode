@@ -67,8 +67,8 @@ class ReadyToClaimAndAccountMetricsTest {
         // 2. pcProgress phải về đúng 21/30 (không còn 30/30 giả)
         assertEquals(21, profile.pcProgress)
         assertEquals(30, profile.pcMax)
-        // 3. edgeMax phải về 0 (không còn 12)
-        assertEquals(0, profile.edgeMax)
+        // 3. BUG-07: flyout_http không được reset edgeMax về 0 khi balance.edgeMax == 0
+        assertEquals(12, profile.edgeMax)
         assertEquals(0, profile.edgeProgress)
         // 4. claimablePoints phải bằng 6
         assertEquals(6, profile.claimablePoints)
@@ -77,8 +77,9 @@ class ReadyToClaimAndAccountMetricsTest {
         // 6. Vì pcProgress = 21/30 nên chưa maxed out hôm nay
         assertFalse(profile.isAllMaxedOutToday(todayStr))
 
-        // Khi đạt 30/30 PC và 30/30 Read, dù edgeMax = 0 vẫn phải báo isAllMaxedOutToday = true
+        // Khi đạt 30/30 PC, 12/12 Edge và 30/30 Read -> báo isAllMaxedOutToday = true
         profile.pcProgress = 30
+        profile.edgeProgress = 12
         profile.readProgress = 30
         profile.readMax = 30
         assertTrue(profile.isAllMaxedOutToday(todayStr))

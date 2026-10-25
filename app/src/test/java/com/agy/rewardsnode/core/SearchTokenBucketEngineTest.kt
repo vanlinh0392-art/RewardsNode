@@ -111,4 +111,19 @@ class SearchTokenBucketEngineTest {
         }
         assertFalse("Hết quota window 2", SearchTokenBucketEngine.canExecuteSearch(account, currentTime))
     }
+
+    @Test
+    fun testClockDriftResetsWindow() {
+        val t0 = 5000000L
+        assertTrue(SearchTokenBucketEngine.canExecuteSearch(account, t0))
+        SearchTokenBucketEngine.recordSearch(account, t0)
+        assertEquals(1, account.searchesInWindow)
+        assertEquals(t0, account.searchWindowStartMs)
+
+        // System clock jumped backwards: nowMs < searchWindowStartMs
+        val tEarlier = 4000000L
+        assertTrue("Clock-drift phải reset window và cho phép tìm kiếm", SearchTokenBucketEngine.canExecuteSearch(account, tEarlier))
+        assertEquals("Mốc window phải được cập nhật về tEarlier", tEarlier, account.searchWindowStartMs)
+        assertEquals("searchesInWindow phải được reset về 0", 0, account.searchesInWindow)
+    }
 }

@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -32,6 +33,34 @@ object RewardsBalanceExtractor {
 
     val latestTelemetryMap = java.util.concurrent.ConcurrentHashMap<String, ExtractedRewardsBalance>()
     private val cookieIdentityCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<String?, String?>>()
+    private val pointsBreakdownCache = java.util.concurrent.ConcurrentHashMap<Int, Pair<Long, PointsBreakdownResult>>()
+
+    @Volatile
+    private var lastRecordedDate: String = ""
+
+    fun getTodayDateStr(): String {
+        val tz = java.util.TimeZone.getTimeZone("GMT+7")
+        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { timeZone = tz }
+        return sdf.format(java.util.Date())
+    }
+
+    fun clearTelemetryMap() {
+        latestTelemetryMap.clear()
+        pointsBreakdownCache.clear()
+    }
+
+    fun checkDayRollover(todayStr: String = getTodayDateStr()) {
+        if (lastRecordedDate.isNotBlank() && lastRecordedDate != todayStr) {
+            clearTelemetryMap()
+        }
+        lastRecordedDate = todayStr
+    }
+
+    fun resetForNewDay(todayStr: String? = null) {
+        val targetDay = todayStr ?: getTodayDateStr()
+        clearTelemetryMap()
+        lastRecordedDate = targetDay
+    }
 
     /**
      * Chọn đúng key ngày hôm nay trong `dailySetPromotions` (tránh lấy nhầm ngày hôm qua ở vị trí đầu tiên
@@ -46,38 +75,7 @@ object RewardsBalanceExtractor {
         if (keys.isEmpty()) return null
         if (keys.size == 1) return keys[0]
 
-        val timeZones = listOf(
-            java.util.TimeZone.getTimeZone("America/Los_Angeles"),
-            java.util.TimeZone.getTimeZone("GMT-8"),
-            java.util.TimeZone.getTimeZone("GMT-7"),
-            java.util.TimeZone.getDefault(),
-            java.util.TimeZone.getTimeZone("GMT+7")
-        )
-        val now = java.util.Date()
-        for (tz in timeZones) {
-            val slashFmt = java.text.SimpleDateFormat("MM/dd/yyyy", java.util.Locale.US).apply { timeZone = tz }
-            val noLeadingZeroSlashFmt = java.text.SimpleDateFormat("M/d/yyyy", java.util.Locale.US).apply { timeZone = tz }
-            val compactFmt = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = tz }
-            val candidates = setOf(slashFmt.format(now), noLeadingZeroSlashFmt.format(now), compactFmt.format(now))
-            val matchedKey = keys.firstOrNull { it in candidates }
-            if (matchedKey != null) return matchedKey
-        }
-
-        // Thử đối chiếu ngày YYYYMMDD trong offerId của phần tử với ngày hiện tại
-        for (tz in timeZones) {
-            val compactToday = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = tz }.format(now)
-            for (k in keys) {
-                val arr = dailySetPromos.optJSONArray(k) ?: continue
-                for (i in 0 until arr.length()) {
-                    val offerId = arr.optJSONObject(i)?.optString("offerId", "") ?: ""
-                    if (offerId.contains("_${compactToday}_")) {
-                        return k
-                    }
-                }
-            }
-        }
-
-        // Nếu có >= 3 ngày [yesterday, today, tomorrow], sắp xếp theo thứ tự thời gian và lấy ngày ở giữa (today)
+        // Hàm chuẩn hóa key ngày để sắp xếp theo thứ tự thời gian tăng dần
         fun normalizeDateKey(key: String): String {
             val slashParts = key.split("/")
             if (slashParts.size == 3) {
@@ -94,6 +92,62 @@ object RewardsBalanceExtractor {
         }
 
         val sortedKeys = keys.sortedBy { normalizeDateKey(it) }
+
+        // Kiểm tra nếu danh sách có nhiệm vụ hợp lệ (ít nhất 1 task không bị khóa)
+        fun hasValidTasks(key: String): Boolean {
+            val arr = dailySetPromos.optJSONArray(key) ?: return false
+            if (arr.length() == 0) return false
+            for (i in 0 until arr.length()) {
+                val item = arr.optJSONObject(i) ?: continue
+                val isLocked = item.optBoolean("isLocked", false) ||
+                    item.optString("exclusiveLockedFeatureStatus", "").equals("locked", ignoreCase = true) ||
+                    item.optJSONObject("attributes")?.optString("is_unlocked", "True")?.equals("False", ignoreCase = true) == true
+                if (!isLocked) return true
+            }
+            return false
+        }
+
+        // Khi có đúng 3 ngày [hôm qua, hôm nay, ngày mai], ưu tiên sortedKeys[1] (hôm nay của server)
+        // nếu chứa nhiệm vụ hợp lệ, tránh lệch múi giờ GMT+7 nhảy sang ngày mai bị khóa.
+        if (sortedKeys.size == 3 && hasValidTasks(sortedKeys[1])) {
+            return sortedKeys[1]
+        }
+
+        // Ưu tiên múi giờ thiết bị TimeZone.getDefault() và GMT+7 lên đầu danh sách candidates.
+        // Xóa bỏ việc ưu tiên America/Los_Angeles trước để tránh lùi ngày về hôm qua tại Việt Nam.
+        val timeZones = listOf(
+            java.util.TimeZone.getDefault(),
+            java.util.TimeZone.getTimeZone("GMT+7"),
+            java.util.TimeZone.getTimeZone("Asia/Ho_Chi_Minh"),
+            java.util.TimeZone.getTimeZone("Asia/Bangkok"),
+            java.util.TimeZone.getTimeZone("America/Los_Angeles")
+        )
+        val now = java.util.Date()
+        for (tz in timeZones) {
+            val slashFmt = java.text.SimpleDateFormat("MM/dd/yyyy", java.util.Locale.US).apply { timeZone = tz }
+            val noLeadingZeroSlashFmt = java.text.SimpleDateFormat("M/d/yyyy", java.util.Locale.US).apply { timeZone = tz }
+            val dashFmt = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).apply { timeZone = tz }
+            val compactFmt = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = tz }
+            val candidates = setOf(slashFmt.format(now), noLeadingZeroSlashFmt.format(now), dashFmt.format(now), compactFmt.format(now))
+            val matchedKey = sortedKeys.firstOrNull { it in candidates }
+            if (matchedKey != null) return matchedKey
+        }
+
+        // Thử đối chiếu ngày YYYYMMDD trong offerId của phần tử với ngày hiện tại (ưu tiên device & GMT+7)
+        for (tz in timeZones) {
+            val compactToday = java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = tz }.format(now)
+            for (k in sortedKeys) {
+                val arr = dailySetPromos.optJSONArray(k) ?: continue
+                for (i in 0 until arr.length()) {
+                    val offerId = arr.optJSONObject(i)?.optString("offerId", "") ?: ""
+                    if (offerId.contains("_${compactToday}_")) {
+                        return k
+                    }
+                }
+            }
+        }
+
+        // Nếu không khớp trực tiếp, lấy ngày ở giữa của sortedKeys (ngày hôm nay trong bộ 3 ngày: yesterday, today, tomorrow)
         return sortedKeys[sortedKeys.size / 2]
     }
 
@@ -165,6 +219,7 @@ object RewardsBalanceExtractor {
         val isAllMaxedOut: Boolean = false,
         val email: String? = null,
         val profileName: String? = null,
+        val country: String? = null,
         val level: Int = 1,
         val claimablePoints: Int = 0,
         val streakProtectionOn: Boolean = false,
@@ -189,7 +244,8 @@ object RewardsBalanceExtractor {
         val redeemGoalTitle: String? = null,
         val redeemGoalMax: Int = 0,
         val isAccountSuspended: Boolean = false,
-        val isRewardsUser: Boolean = true
+        val isRewardsUser: Boolean = false,
+        val hasExactCounters: Boolean = false
     )
 
     /**
@@ -783,6 +839,69 @@ object RewardsBalanceExtractor {
         return map.map { "${it.key}=${it.value}" }.joinToString("; ")
     }
 
+    private fun extractCounterObj(source: Any?, vararg keys: String): JSONObject? {
+        if (source == null || keys.isEmpty()) return null
+        when (source) {
+            is JSONObject -> {
+                for (k in keys) {
+                    val directObj = source.optJSONObject(k)
+                    if (directObj != null) return directObj
+                    val arr = source.optJSONArray(k)
+                    if (arr != null && arr.length() > 0) {
+                        val first = arr.optJSONObject(0)
+                        if (first != null) return first
+                    }
+                }
+                val subCounters = source.optJSONArray("counters")
+                    ?: source.optJSONArray("dailyPoint")
+                    ?: source.optJSONArray("DailyPoint")
+                if (subCounters != null) {
+                    val found = extractCounterObj(subCounters, *keys)
+                    if (found != null) return found
+                }
+            }
+            is JSONArray -> {
+                for (i in 0 until source.length()) {
+                    val item = source.optJSONObject(i) ?: continue
+                    val name = item.optString("name", "")
+                    val actType = item.optString("activityType", "")
+                    val id = item.optString("id", item.optString("offerId", ""))
+                    val title = item.optString("title", "")
+                    val type = item.optString("type", "")
+                    for (k in keys) {
+                        if (name.equals(k, ignoreCase = true) ||
+                            actType.equals(k, ignoreCase = true) ||
+                            id.equals(k, ignoreCase = true) ||
+                            type.equals(k, ignoreCase = true) ||
+                            title.contains(k, ignoreCase = true)
+                        ) {
+                            return item
+                        }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun getCounterProgress(obj: JSONObject?): Int {
+        if (obj == null) return 0
+        return obj.optInt("pointProgress", -1).takeIf { it >= 0 }
+            ?: obj.optInt("progress", -1).takeIf { it >= 0 }
+            ?: obj.optInt("points", -1).takeIf { it >= 0 }
+            ?: obj.optInt("current", -1).takeIf { it >= 0 }
+            ?: 0
+    }
+
+    private fun getCounterMax(obj: JSONObject?): Int {
+        if (obj == null) return 0
+        return obj.optInt("pointProgressMax", -1).takeIf { it >= 0 }
+            ?: obj.optInt("max", -1).takeIf { it >= 0 }
+            ?: obj.optInt("maxPoint", -1).takeIf { it >= 0 }
+            ?: obj.optInt("target", -1).takeIf { it >= 0 }
+            ?: 0
+    }
+
     /**
      * Bóc tách điểm số trực tiếp qua HTTP GET endpoint rewards.bing.com/dashboard trên Dispatchers.IO.
      * Đây là endpoint chính xác nhất của Microsoft Rewards hiện tại, chứa trực tiếp availablePoints (balance),
@@ -807,9 +926,10 @@ object RewardsBalanceExtractor {
 
     suspend fun extractBalanceFromDashboardHttp(
         cookiesSnapshot: String?,
-        proxyUrl: String? = null
+        proxyUrl: String? = null,
+        accountId: String? = null
     ): ExtractedRewardsBalance = withContext(Dispatchers.IO) {
-        extractPointsViaHttp(cookiesSnapshot, null, proxyUrl)
+        extractPointsViaHttp(cookiesSnapshot, null, proxyUrl, accountId)
     }
 
     private fun cacheCookieIdentity(cookieKey: Int?, email: String?, profileName: String?) {
@@ -822,8 +942,10 @@ object RewardsBalanceExtractor {
     suspend fun extractPointsViaHttp(
         cookiesSnapshot: String?,
         userAgent: String? = null,
-        proxyUrl: String? = null
+        proxyUrl: String? = null,
+        accountId: String? = null
     ): ExtractedRewardsBalance = withContext(Dispatchers.IO) {
+        checkDayRollover()
         val bingCookies = filterBingCookies(cookiesSnapshot)
         val effectiveUa = if (!userAgent.isNullOrBlank()) userAgent else DEFAULT_DESKTOP_EDGE_UA
         val cookieKey = bingCookies.split(";")
@@ -832,12 +954,21 @@ object RewardsBalanceExtractor {
             ?.removePrefix("_U=")
             ?.takeIf { it.isNotBlank() }
             ?.hashCode()
-        val cachedIdentity = cookieKey?.let { cookieIdentityCache[it] }
 
         fun enrichWithExactBreakdownIfNeeded(balance: ExtractedRewardsBalance): ExtractedRewardsBalance {
             if (!balance.isSuccess) return balance
             if (balance.level >= 2 && (balance.mobileProgress == 0 || balance.pcProgress >= balance.pcMax)) {
-                val bd = queryPointsBreakdownHttp(bingCookies, effectiveUa, proxyUrl)
+                val effectiveCookieKey = cookieKey ?: bingCookies.hashCode()
+                val cached = pointsBreakdownCache[effectiveCookieKey]
+                val now = System.currentTimeMillis()
+                val bd = if (cached != null && (now - cached.first) < 60_000L) {
+                    cached.second
+                } else {
+                    val fresh = queryPointsBreakdownHttp(bingCookies, effectiveUa, proxyUrl)
+                    if (pointsBreakdownCache.size > 200) pointsBreakdownCache.clear()
+                    pointsBreakdownCache[effectiveCookieKey] = Pair(now, fresh)
+                    fresh
+                }
                 if (bd.isSuccess) {
                     val pcProg = bd.pcProgress
                     val pcM = if (bd.pcMax > 0) bd.pcMax else balance.pcMax
@@ -845,7 +976,7 @@ object RewardsBalanceExtractor {
                     val mobM = if (bd.mobileMax > 0) bd.mobileMax else balance.mobileMax
                     val edgeProg = if (bd.edgeMax > 0) bd.edgeProgress else balance.edgeProgress
                     val edgeM = if (bd.edgeMax > 0) bd.edgeMax else balance.edgeMax
-                    val effEarned = if (bd.offersPoints > 0) (pcProg + mobProg + edgeProg + bd.offersPoints) else balance.pointsEarnedToday
+                    val effEarned = pcProg + mobProg + edgeProg
                     return balance.copy(
                         source = "${balance.source}+breakdown",
                         pcProgress = pcProg,
@@ -854,7 +985,8 @@ object RewardsBalanceExtractor {
                         mobileMax = mobM,
                         edgeProgress = edgeProg,
                         edgeMax = edgeM,
-                        pointsEarnedToday = maxOf(balance.pointsEarnedToday, effEarned)
+                        pointsEarnedToday = maxOf(balance.pointsEarnedToday, effEarned),
+                        hasExactCounters = true
                     )
                 }
             }
@@ -863,39 +995,37 @@ object RewardsBalanceExtractor {
 
         // Ưu tiên Endpoint 1 (Primary): https://www.bing.com/rewards/panelflyout/getuserinfo
         // Nhanh, đầy đủ userInfo.balance, levelInfoPromotion, dailyCheckInPromotion, dailySetPromotions + hash + userId mà không bị 401
-        val flyoutResult = queryFlyoutApi(FLYOUT_API_URL, bingCookies, effectiveUa, proxyUrl)
+        val flyoutResult = queryFlyoutApi(FLYOUT_API_URL, bingCookies, effectiveUa, proxyUrl, accountId)
         if (flyoutResult.isSuccess &&
             (flyoutResult.availablePoints > 0 || flyoutResult.lifetimePoints > 0) &&
             flyoutResult.dailyTasks.isNotEmpty()
         ) {
-            val cachedTelemetry = (flyoutResult.email ?: cachedIdentity?.first)?.let { latestTelemetryMap[it] }
             val resolvedEmail = flyoutResult.email?.takeIf { it.isNotBlank() }
-                ?: cachedTelemetry?.email
-                ?: cachedIdentity?.first
             val resolvedName = flyoutResult.profileName?.takeIf { it.isNotBlank() }
-                ?: cachedTelemetry?.profileName
-                ?: cachedIdentity?.second
             val fastResult = enrichWithExactBreakdownIfNeeded(flyoutResult.copy(
                 source = "flyout_http",
                 email = resolvedEmail,
                 profileName = resolvedName
             ))
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = fastResult
+            }
             if (!resolvedEmail.isNullOrBlank()) {
                 latestTelemetryMap[resolvedEmail] = fastResult
                 cacheCookieIdentity(cookieKey, resolvedEmail, resolvedName)
+                return@withContext fastResult
+            } else if (!accountId.isNullOrBlank()) {
                 return@withContext fastResult
             }
         }
 
         // Fallback Endpoint 2: https://rewards.bing.com/dashboard (khi Flyout thiếu dailyTasks hoặc không có điểm)
-        val dashResult = queryRewardsDashboard(DASHBOARD_URL, bingCookies, effectiveUa, proxyUrl)
+        val dashResult = queryRewardsDashboard(DASHBOARD_URL, bingCookies, effectiveUa, proxyUrl, accountId)
         if (flyoutResult.isSuccess && (flyoutResult.availablePoints > 0 || flyoutResult.lifetimePoints > 0)) {
             val mergedEmail = flyoutResult.email?.takeIf { it.isNotBlank() }
                 ?: dashResult.email?.takeIf { it.isNotBlank() }
-                ?: cachedIdentity?.first
             val mergedName = flyoutResult.profileName?.takeIf { it.isNotBlank() }
                 ?: dashResult.profileName?.takeIf { it.isNotBlank() }
-                ?: cachedIdentity?.second
             val useDash = dashResult.isSuccess && dashResult.dailyTasks.isNotEmpty()
             var mergedTasks = if (useDash) dashResult.dailyTasks else flyoutResult.dailyTasks
             var mergedDsDone = if (useDash) dashResult.dailySetDone else flyoutResult.dailySetDone
@@ -905,7 +1035,7 @@ object RewardsBalanceExtractor {
             var mergedSource = if (dashResult.isSuccess) "flyout_http+dashboard" else "flyout_http"
 
             if (mergedTasks.isEmpty()) {
-                val userInfoFallback = queryFlyoutApi(GET_USER_INFO_API_URL, bingCookies, effectiveUa, proxyUrl)
+                val userInfoFallback = queryFlyoutApi(GET_USER_INFO_API_URL, bingCookies, effectiveUa, proxyUrl, accountId)
                 if (userInfoFallback.isSuccess && userInfoFallback.dailyTasks.isNotEmpty()) {
                     mergedTasks = userInfoFallback.dailyTasks
                     mergedDsDone = userInfoFallback.dailySetDone
@@ -929,6 +1059,9 @@ object RewardsBalanceExtractor {
                 dailySetTotal = mergedDsTotal
             )
             val enrichedMerged = enrichWithExactBreakdownIfNeeded(merged)
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = enrichedMerged
+            }
             if (!mergedEmail.isNullOrBlank()) {
                 latestTelemetryMap[mergedEmail] = enrichedMerged
             }
@@ -937,11 +1070,11 @@ object RewardsBalanceExtractor {
         }
 
         if (dashResult.isSuccess && (dashResult.availablePoints > 0 || dashResult.lifetimePoints > 0)) {
-            val resolvedEmail = dashResult.email?.takeIf { it.isNotBlank() } ?: cachedIdentity?.first
-            val resolvedName = dashResult.profileName?.takeIf { it.isNotBlank() } ?: cachedIdentity?.second
+            val resolvedEmail = dashResult.email?.takeIf { it.isNotBlank() }
+            val resolvedName = dashResult.profileName?.takeIf { it.isNotBlank() }
             cacheCookieIdentity(cookieKey, resolvedEmail, resolvedName)
-            if (flyoutResult.dailyTasks.isNotEmpty()) {
-                return@withContext enrichWithExactBreakdownIfNeeded(dashResult.copy(
+            val baseDash = if (flyoutResult.dailyTasks.isNotEmpty()) {
+                dashResult.copy(
                     source = "rewards_dashboard_http+flyout_tasks",
                     email = resolvedEmail,
                     profileName = resolvedName,
@@ -949,39 +1082,60 @@ object RewardsBalanceExtractor {
                     dailySetDone = flyoutResult.dailySetDone,
                     dailySetProgress = flyoutResult.dailySetProgress,
                     dailySetTotal = flyoutResult.dailySetTotal
-                ))
+                )
+            } else {
+                dashResult.copy(email = resolvedEmail, profileName = resolvedName)
             }
-            return@withContext enrichWithExactBreakdownIfNeeded(dashResult.copy(email = resolvedEmail, profileName = resolvedName))
+            val enrichedDash = enrichWithExactBreakdownIfNeeded(baseDash)
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = enrichedDash
+            }
+            if (!resolvedEmail.isNullOrBlank()) {
+                latestTelemetryMap[resolvedEmail] = enrichedDash
+            }
+            return@withContext enrichedDash
         }
 
         // Fallback Endpoint 3: https://rewards.bing.com/api/getuserinfo (chỉ gọi khi cả Flyout và Dashboard đều thất bại)
-        val userInfoResult = queryFlyoutApi(GET_USER_INFO_API_URL, bingCookies, effectiveUa, proxyUrl)
+        val userInfoResult = queryFlyoutApi(GET_USER_INFO_API_URL, bingCookies, effectiveUa, proxyUrl, accountId)
         if (userInfoResult.isSuccess && (userInfoResult.availablePoints > 0 || userInfoResult.lifetimePoints > 0)) {
-            val resolvedEmail = userInfoResult.email?.takeIf { it.isNotBlank() } ?: cachedIdentity?.first
-            val resolvedName = userInfoResult.profileName?.takeIf { it.isNotBlank() } ?: cachedIdentity?.second
+            val resolvedEmail = userInfoResult.email?.takeIf { it.isNotBlank() }
+            val resolvedName = userInfoResult.profileName?.takeIf { it.isNotBlank() }
             cacheCookieIdentity(cookieKey, resolvedEmail, resolvedName)
             val fallbackTasks = when {
                 flyoutResult.dailyTasks.isNotEmpty() -> flyoutResult.dailyTasks
                 dashResult.dailyTasks.isNotEmpty() -> dashResult.dailyTasks
                 else -> userInfoResult.dailyTasks
             }
-            return@withContext enrichWithExactBreakdownIfNeeded(userInfoResult.copy(
+            val enrichedUserInfo = enrichWithExactBreakdownIfNeeded(userInfoResult.copy(
                 source = "userinfo_http",
                 email = resolvedEmail,
                 profileName = resolvedName,
                 dailyTasks = fallbackTasks
             ))
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = enrichedUserInfo
+            }
+            if (!resolvedEmail.isNullOrBlank()) {
+                latestTelemetryMap[resolvedEmail] = enrichedUserInfo
+            }
+            return@withContext enrichedUserInfo
         }
 
         val finalFallback = flyoutResult.takeIf { it.isSuccess } ?: dashResult.takeIf { it.isSuccess } ?: userInfoResult
-        return@withContext enrichWithExactBreakdownIfNeeded(finalFallback)
+        val enrichedFallback = enrichWithExactBreakdownIfNeeded(finalFallback)
+        if (!accountId.isNullOrBlank() && enrichedFallback.isSuccess) {
+            latestTelemetryMap[accountId] = enrichedFallback
+        }
+        return@withContext enrichedFallback
     }
 
     private fun queryRewardsDashboard(
         endpointUrl: String,
         bingCookies: String,
         userAgent: String,
-        proxyUrl: String? = null
+        proxyUrl: String? = null,
+        accountId: String? = null
     ): ExtractedRewardsBalance {
         var connection: HttpURLConnection? = null
         try {
@@ -1024,6 +1178,23 @@ object RewardsBalanceExtractor {
             val extractedDailyTasks = mutableListOf<DailyTask>()
             var parsedTodaySetTotal = 0
             var parsedTodaySetCompleted = 0
+            var jsonAvailablePoints: Int? = null
+            var jsonLifetimePoints: Int? = null
+            var jsonStreakCount: Int? = null
+            var jsonEmail: String? = null
+            var jsonCountry: String? = null
+            var jsonProfileName: String? = null
+            var jsonLevel: Int? = null
+            var jsonPcProgress: Int? = null
+            var jsonPcMax: Int? = null
+            var jsonMobProgress: Int? = null
+            var jsonMobMax: Int? = null
+            var jsonEdgeProgress: Int? = null
+            var jsonEdgeMax: Int? = null
+            var jsonReadNewsProgress: Int? = null
+            var jsonReadNewsMax: Int? = null
+            var jsonTodaysPoints: Int? = null
+            var jsonIsRewardsUser: Boolean? = null
             try {
                 val nextDataMatch = Regex("""<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>""", RegexOption.DOT_MATCHES_ALL).find(responseBody)
                 val jsonStr = nextDataMatch?.groupValues?.get(1)
@@ -1032,21 +1203,45 @@ object RewardsBalanceExtractor {
 
                 if (!jsonStr.isNullOrBlank()) {
                     val rootJson = JSONObject(jsonStr)
-                    val rootUserId = rootJson.optString("userId", "")
-                    val dataObj = if (rootJson.has("props")) {
-                        rootJson.optJSONObject("props")?.optJSONObject("pageProps") ?: rootJson
-                    } else rootJson
+                    val pageProps = rootJson.optJSONObject("props")?.optJSONObject("pageProps")
+                    val dashObj = pageProps?.optJSONObject("dashboard")
+                        ?: rootJson.optJSONObject("dashboard")
+                    val promotionsObj = dashObj?.optJSONObject("promotions")
+                        ?: pageProps?.optJSONObject("promotions")
+                        ?: rootJson.optJSONObject("promotions")
+                    val userStatusObj = dashObj?.optJSONObject("userStatus")
+                        ?: promotionsObj?.optJSONObject("userStatus")
+                        ?: pageProps?.optJSONObject("userStatus")
+                        ?: rootJson.optJSONObject("userStatus")
+                    val userProfileObj = userStatusObj?.optJSONObject("userProfile")
+                        ?: dashObj?.optJSONObject("userProfile")
+                        ?: pageProps?.optJSONObject("userProfile")
+                        ?: rootJson.optJSONObject("userProfile")
+                        ?: pageProps?.optJSONObject("userInfo")
+                        ?: rootJson.optJSONObject("userInfo")
+
+                    val dataObj = dashObj ?: promotionsObj ?: pageProps ?: rootJson
+                    val rootUserId = userProfileObj?.optString("userId", "")
+                        ?.ifBlank { userStatusObj?.optString("userId", "") }
+                        ?.ifBlank { dashObj?.optString("userId", "") }
+                        ?.ifBlank { rootJson.optString("userId", "") }
+                        ?: ""
+
                     // 1. Trích xuất dailySetPromotions an toàn theo đúng ngày hôm nay
-                    val promos = dataObj.optJSONObject("dailySetPromotions")
-                        ?: dataObj.optJSONObject("userStatus")?.optJSONObject("dailySetPromotions")
+                    val promos = dashObj?.optJSONObject("dailySetPromotions")
+                        ?: promotionsObj?.optJSONObject("dailySetPromotions")
+                        ?: userStatusObj?.optJSONObject("dailySetPromotions")
+                        ?: dataObj.optJSONObject("dailySetPromotions")
                         ?: rootJson.optJSONObject("dailySetPromotions")
-                        ?: rootJson.optJSONObject("userStatus")?.optJSONObject("dailySetPromotions")
                     val promosArr = if (promos == null) {
-                        dataObj.optJSONArray("dailySetPromotions")
-                            ?: dataObj.optJSONObject("userStatus")?.optJSONArray("dailySetPromotions")
-                            ?: rootJson.optJSONArray("dailySetPromotions")
-                            ?: rootJson.optJSONObject("userStatus")?.optJSONArray("dailySetPromotions")
+                        dashObj?.optJSONArray("dailySetPromotions")
+                            ?: promotionsObj?.optJSONArray("dailySetPromotions")
+                            ?: userStatusObj?.optJSONArray("dailySetPromotions")
+                            ?: dataObj.optJSONArray("dailySetPromotions")
+                            ?: dashObj?.optJSONArray("dailySetItems")
+                            ?: promotionsObj?.optJSONArray("dailySetItems")
                             ?: dataObj.optJSONArray("dailySetItems")
+                            ?: rootJson.optJSONArray("dailySetPromotions")
                             ?: rootJson.optJSONArray("dailySetItems")
                     } else null
 
@@ -1057,7 +1252,7 @@ object RewardsBalanceExtractor {
                             parsedTodaySetTotal = arr.length()
                             for (j in 0 until arr.length()) {
                                 val item = arr.optJSONObject(j) ?: continue
-                                val pMax = item.optInt("pointProgressMax", item.optInt("points", 10))
+                                val pMax = item.optInt("pointProgressMax", item.optInt("points", 10)).let { if (it <= 0) 10 else it }
                                 val pProg = item.optInt("pointProgress", 0)
                                 val isDone = item.optBoolean("complete", false) || (pMax > 0 && pProg >= pMax)
                                 if (isDone) parsedTodaySetCompleted++
@@ -1067,9 +1262,10 @@ object RewardsBalanceExtractor {
                                 val authKey = item.optString("hash", item.optString("authKey", ""))
                                 val actType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                                 val itemUserId = item.optString("userId", rootUserId).ifBlank { rootUserId }
-                                val taskType = RewardsActivitiesEngine.detectTaskType(dest, title)
-                                if (RewardsActivitiesEngine.isSafePromotion(title, dest, pMax) && extractedDailyTasks.none { it.id == offerId }) {
-                                    extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId))
+                                val description = item.optString("description", item.optString("desc", ""))
+                                val taskType = RewardsActivitiesEngine.detectTaskType(dest, title, description)
+                                if (extractedDailyTasks.none { it.id == offerId }) {
+                                    extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId, description))
                                 }
                             }
                         }
@@ -1077,7 +1273,7 @@ object RewardsBalanceExtractor {
                         parsedTodaySetTotal = promosArr.length()
                         for (j in 0 until promosArr.length()) {
                             val item = promosArr.optJSONObject(j) ?: continue
-                            val pMax = item.optInt("pointProgressMax", item.optInt("points", 10))
+                            val pMax = item.optInt("pointProgressMax", item.optInt("points", 10)).let { if (it <= 0) 10 else it }
                             val pProg = item.optInt("pointProgress", 0)
                             val isDone = item.optBoolean("complete", false) || (pMax > 0 && pProg >= pMax)
                             if (isDone) parsedTodaySetCompleted++
@@ -1087,22 +1283,24 @@ object RewardsBalanceExtractor {
                             val authKey = item.optString("hash", item.optString("authKey", ""))
                             val actType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                             val itemUserId = item.optString("userId", rootUserId).ifBlank { rootUserId }
-                            val taskType = RewardsActivitiesEngine.detectTaskType(dest, title)
-                            if (RewardsActivitiesEngine.isSafePromotion(title, dest, pMax) && extractedDailyTasks.none { it.id == offerId }) {
-                                extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId))
+                            val description = item.optString("description", item.optString("desc", ""))
+                            val taskType = RewardsActivitiesEngine.detectTaskType(dest, title, description)
+                            if (extractedDailyTasks.none { it.id == offerId }) {
+                                extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId, description))
                             }
                         }
                     }
 
                     // 2. Trích xuất morePromotions an toàn
-                    val morePromos = dataObj.optJSONArray("morePromotions")
-                        ?: dataObj.optJSONObject("userStatus")?.optJSONArray("morePromotions")
+                    val morePromos = dashObj?.optJSONArray("morePromotions")
+                        ?: promotionsObj?.optJSONArray("morePromotions")
+                        ?: userStatusObj?.optJSONArray("morePromotions")
+                        ?: dataObj.optJSONArray("morePromotions")
                         ?: rootJson.optJSONArray("morePromotions")
-                        ?: rootJson.optJSONObject("userStatus")?.optJSONArray("morePromotions")
                     if (morePromos != null) {
                         for (j in 0 until morePromos.length()) {
                             val item = morePromos.optJSONObject(j) ?: continue
-                            val pMax = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else if (item.has("points")) item.optInt("points", 0) else 10
+                            val pMax = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else item.optInt("points", 0)
                             if (pMax <= 0) continue
                             val exclStatus = item.optString("exclusiveLockedFeatureStatus", "").lowercase(java.util.Locale.ROOT)
                             val isUnlockedAttr = item.optJSONObject("attributes")?.optString("is_unlocked", "True") ?: "True"
@@ -1115,47 +1313,183 @@ object RewardsBalanceExtractor {
                             val authKey = item.optString("hash", item.optString("authKey", ""))
                             val actType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                             val itemUserId = item.optString("userId", rootUserId).ifBlank { rootUserId }
-                            val taskType = RewardsActivitiesEngine.detectTaskType(dest, title)
-                            if (RewardsActivitiesEngine.isSafePromotion(title, dest, pMax) && extractedDailyTasks.none { it.id == offerId }) {
-                                extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId))
+                            val description = item.optString("description", item.optString("desc", ""))
+                            val taskType = RewardsActivitiesEngine.detectTaskType(dest, title, description)
+                            if (RewardsActivitiesEngine.isSafePromotion(title, dest, pMax, description) && extractedDailyTasks.none { it.id == offerId }) {
+                                extractedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId, description))
                             }
                         }
                     }
-                }
-                if (extractedDailyTasks.isEmpty()) {
-                    extractedDailyTasks.addAll(RewardsActivitiesEngine.parseDailyTasksFromJson(unescapedBody))
+
+                    // 3. Trích xuất points, streaks, profile và counters trực tiếp từ JSON
+                    jsonAvailablePoints = userStatusObj?.optInt("availablePoints", -1)?.takeIf { it >= 0 }
+                        ?: dashObj?.optInt("availablePoints", -1)?.takeIf { it >= 0 }
+                        ?: pageProps?.optInt("availablePoints", -1)?.takeIf { it >= 0 }
+                        ?: rootJson.optInt("availablePoints", -1).takeIf { it >= 0 }
+
+                    jsonLifetimePoints = userStatusObj?.optInt("lifetimePoints", -1)?.takeIf { it > 0 }
+                        ?: dashObj?.optInt("lifetimePoints", -1)?.takeIf { it > 0 }
+                        ?: pageProps?.optInt("lifetimePoints", -1)?.takeIf { it > 0 }
+                        ?: rootJson.optInt("lifetimePoints", -1).takeIf { it > 0 }
+
+                    val streakInfo = userStatusObj?.optJSONObject("streakInfo")
+                        ?: dashObj?.optJSONObject("streakInfo")
+                        ?: pageProps?.optJSONObject("streakInfo")
+                        ?: rootJson.optJSONObject("streakInfo")
+                    val streakPromotion = userStatusObj?.optJSONObject("streakPromotion")
+                        ?: dashObj?.optJSONObject("streakPromotion")
+                        ?: promotionsObj?.optJSONObject("streakPromotion")
+                        ?: pageProps?.optJSONObject("streakPromotion")
+
+                    jsonStreakCount = streakInfo?.optInt("streakCount", -1)?.takeIf { it >= 0 }
+                        ?: streakPromotion?.optInt("activityProgress", -1)?.takeIf { it >= 0 }
+                        ?: userStatusObj?.optInt("streakCount", -1)?.takeIf { it >= 0 }
+                        ?: dashObj?.optInt("streakCount", -1)?.takeIf { it >= 0 }
+
+                    jsonEmail = userProfileObj?.optString("email", "")?.takeIf { it.isNotBlank() }
+                        ?: userStatusObj?.optString("email", "")?.takeIf { it.isNotBlank() }
+                        ?: dashObj?.optString("email", "")?.takeIf { it.isNotBlank() }
+
+                    jsonCountry = userProfileObj?.optString("country", "")?.takeIf { it.isNotBlank() }
+                        ?: userStatusObj?.optString("country", "")?.takeIf { it.isNotBlank() }
+                        ?: dashObj?.optString("country", "")?.takeIf { it.isNotBlank() }
+
+                    jsonProfileName = userProfileObj?.optString("name", "")?.takeIf { it.isNotBlank() }
+                        ?: userStatusObj?.optString("name", "")?.takeIf { it.isNotBlank() }
+                        ?: dashObj?.optString("name", "")?.takeIf { it.isNotBlank() }
+
+                    val levelFromUserStatus = userStatusObj?.optInt("level", -1)?.takeIf { it > 0 }
+                        ?: dashObj?.optInt("level", -1)?.takeIf { it > 0 }
+                    if (levelFromUserStatus != null) {
+                        jsonLevel = if (levelFromUserStatus >= 2) 2 else 1
+                    }
+
+                    val counters: Any? = userStatusObj?.optJSONObject("counters")
+                        ?: userStatusObj?.optJSONArray("counters")
+                        ?: dashObj?.optJSONObject("counters")
+                        ?: dashObj?.optJSONArray("counters")
+                        ?: pageProps?.optJSONObject("counters")
+                        ?: pageProps?.optJSONArray("counters")
+                        ?: rootJson.optJSONObject("counters")
+                        ?: rootJson.optJSONArray("counters")
+
+                    val pcAliases = arrayOf("pcSearch", "desktopSearch", "pc", "desktop")
+                    val mobAliases = arrayOf("mobileSearch", "phoneSearch", "mobile", "phone")
+                    val edgeAliases = arrayOf("bonusSearch", "edgeSearch", "bonusPoints", "edgePoints", "edgeBonus", "bonusSearchPoints", "bonus", "edge")
+
+                    val pcObj = extractCounterObj(counters, *pcAliases)
+                        ?: extractCounterObj(userStatusObj, *pcAliases)
+                        ?: extractCounterObj(dashObj, *pcAliases)
+                        ?: extractCounterObj(pageProps, *pcAliases)
+                        ?: extractCounterObj(rootJson, *pcAliases)
+
+                    val mobObj = extractCounterObj(counters, *mobAliases)
+                        ?: extractCounterObj(userStatusObj, *mobAliases)
+                        ?: extractCounterObj(dashObj, *mobAliases)
+                        ?: extractCounterObj(pageProps, *mobAliases)
+                        ?: extractCounterObj(rootJson, *mobAliases)
+
+                    val edgeObj = extractCounterObj(counters, *edgeAliases)
+                        ?: extractCounterObj(userStatusObj, *edgeAliases)
+                        ?: extractCounterObj(dashObj, *edgeAliases)
+                        ?: extractCounterObj(pageProps, *edgeAliases)
+                        ?: extractCounterObj(rootJson, *edgeAliases)
+
+                    if (pcObj != null) {
+                        jsonPcProgress = getCounterProgress(pcObj)
+                        val m = getCounterMax(pcObj)
+                        if (m > 0) jsonPcMax = m
+                    }
+                    if (mobObj != null) {
+                        jsonMobProgress = getCounterProgress(mobObj)
+                        val m = getCounterMax(mobObj)
+                        if (m > 0) jsonMobMax = m
+                    }
+                    if (edgeObj != null) {
+                        jsonEdgeProgress = getCounterProgress(edgeObj)
+                        val m = getCounterMax(edgeObj)
+                        if (m > 0) jsonEdgeMax = m
+                    }
+
+                    val dailyPoint = when (counters) {
+                        is JSONObject -> counters.optJSONArray("dailyPoint") ?: counters.optJSONArray("DailyPoint")
+                        is JSONArray -> counters
+                        else -> null
+                    } ?: userStatusObj?.optJSONArray("dailyPoint")
+                      ?: dashObj?.optJSONArray("dailyPoint")
+                      ?: pageProps?.optJSONArray("dailyPoint")
+                      ?: rootJson.optJSONArray("dailyPoint")
+
+                    if (dailyPoint != null && dailyPoint.length() > 0) {
+                        for (i in 0 until dailyPoint.length()) {
+                            val item = dailyPoint.optJSONObject(i) ?: continue
+                            val prog = getCounterProgress(item)
+                            val maxP = getCounterMax(item)
+                            val rawName = if (item.isNull("name")) "" else item.optString("name", "")
+                            val rawDesc = if (item.isNull("description")) "" else item.optString("description", "")
+                            val rawTitle = if (item.isNull("title")) "" else item.optString("title", "")
+                            val rawActType = if (item.isNull("activityType")) "" else item.optString("activityType", "")
+                            val rawId = if (item.isNull("id")) "" else item.optString("id", item.optString("offerId", ""))
+                            val desc = "$rawName $rawDesc $rawTitle $rawActType $rawId".trim().lowercase()
+
+                            if (desc.contains("edge") || desc.contains("bonus") || desc.contains("trình duyệt edge")) {
+                                if (jsonEdgeProgress == null) jsonEdgeProgress = prog
+                                if (jsonEdgeMax == null && maxP > 0) jsonEdgeMax = maxP
+                            } else if (desc.contains("mobile") || desc.contains("phone") || desc.contains("di động") || desc.contains("điện thoại")) {
+                                if (jsonMobProgress == null) jsonMobProgress = prog
+                                if (jsonMobMax == null && maxP > 0) jsonMobMax = maxP
+                            } else if (desc.contains("read") || desc.contains("news") || desc.contains("báo") || desc.contains("article") || desc.contains("tin tức")) {
+                                if (jsonReadNewsProgress == null) jsonReadNewsProgress = prog
+                                if (jsonReadNewsMax == null && maxP > 0) jsonReadNewsMax = maxP
+                            } else if (desc.contains("pc") || desc.contains("desktop") || desc.contains("computer") || desc.contains("máy tính")) {
+                                if (jsonPcProgress == null) jsonPcProgress = prog
+                                if (jsonPcMax == null && maxP > 0) jsonPcMax = maxP
+                            } else if (desc.contains("today") || desc.contains("hôm nay") || desc.contains("daily point") || maxP > 90) {
+                                jsonTodaysPoints = maxOf(jsonTodaysPoints ?: 0, prog)
+                            }
+                        }
+                    }
+
+                    jsonIsRewardsUser = when {
+                        userStatusObj?.has("isRewardsUser") == true -> userStatusObj.optBoolean("isRewardsUser")
+                        dashObj?.has("isRewardsUser") == true -> dashObj.optBoolean("isRewardsUser")
+                        rootJson.has("isRewardsUser") -> rootJson.optBoolean("isRewardsUser")
+                        else -> null
+                    }
                 }
             } catch (_: Exception) {}
 
             val balMatch = Regex("""balance[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val availablePoints = balMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val availablePoints = jsonAvailablePoints ?: (balMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0)
 
             val lifeMatch = Regex("""lifetimeEarn[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val lifetimePoints = lifeMatch?.groupValues?.get(1)?.toIntOrNull() ?: availablePoints
+            val lifetimePoints = jsonLifetimePoints ?: (lifeMatch?.groupValues?.get(1)?.toIntOrNull() ?: availablePoints)
 
             val newLvlMatch = Regex("""newLevel([123])""", RegexOption.IGNORE_CASE).find(unescapedBody)
             val lvlMatch = Regex("""level[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val rawLevel = newLvlMatch?.groupValues?.get(1)?.toIntOrNull()
+            val rawLevel = jsonLevel
+                ?: newLvlMatch?.groupValues?.get(1)?.toIntOrNull()
                 ?: lvlMatch?.groupValues?.get(1)?.toIntOrNull()
                 ?: 1
             val level = if (rawLevel >= 2) 2 else 1
 
             val streakMatch = Regex("""streakCounter[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val streakCount = streakMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+            val streakCount = jsonStreakCount ?: (streakMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0)
 
             val todaysPointsMatch = Regex("""todays_points[\x22':\s]+\x22?(\d+)""").find(unescapedBody)
                 ?: Regex("""pointsEarnedToday[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val parsedTodaysPoints = todaysPointsMatch?.groupValues?.get(1)?.toIntOrNull()
+            val parsedTodaysPoints = jsonTodaysPoints ?: todaysPointsMatch?.groupValues?.get(1)?.toIntOrNull()
 
             val searchDailyMatch = Regex("""bing_search_daily_points[\x22':\s]+\x22?(\d+)""").find(unescapedBody)
             val parsedSearchDailyPoints = searchDailyMatch?.groupValues?.get(1)?.toIntOrNull()
 
             val nameMatch = Regex("""class="[^"]*text-pageHeader[^"]*">([^<]+)<""").find(responseBody)
                 ?: Regex("""name[\\":\s]+([^\\",}{]+)""").find(unescapedBody)
-            val profileName = nameMatch?.groupValues?.get(1)?.trim()
+            val profileName = jsonProfileName ?: nameMatch?.groupValues?.get(1)?.trim()
 
             val emailMatch = Regex("""([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})""").find(unescapedBody)
-            val email = emailMatch?.groupValues?.get(1)?.trim()
+            val email = jsonEmail ?: emailMatch?.groupValues?.get(1)?.trim()
+            val country = jsonCountry
 
             val claimMatch = Regex("""DashboardHeader_ClaimablePoints[^}]*?points[\x22':\s]+\x22?(\d+)""").find(unescapedBody)
                 ?: Regex("""claimable_points[\x22':\s]+\x22?(\d+)""").find(unescapedBody)
@@ -1183,9 +1517,10 @@ object RewardsBalanceExtractor {
                     val groupedByDate = allDailySetMatches.groupBy({ it.groupValues[1] }, { it.value }).mapValues { it.value.toSet() }
                     val sortedDates = groupedByDate.keys.sorted()
                     val todayCompactCandidates = listOf(
-                        java.util.TimeZone.getTimeZone("America/Los_Angeles"),
                         java.util.TimeZone.getDefault(),
-                        java.util.TimeZone.getTimeZone("GMT+7")
+                        java.util.TimeZone.getTimeZone("GMT+7"),
+                        java.util.TimeZone.getTimeZone("Asia/Ho_Chi_Minh"),
+                        java.util.TimeZone.getTimeZone("America/Los_Angeles")
                     ).map { tz ->
                         java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US).apply { timeZone = tz }.format(java.util.Date())
                     }
@@ -1197,63 +1532,62 @@ object RewardsBalanceExtractor {
                     }
                     dailySetTotal = if (todayItems.isNotEmpty()) todayItems.size else 3
                     dailySetProgress = minOf(completedForDate, dailySetTotal)
-                    dailySetDone = (dailySetProgress >= dailySetTotal && dailySetTotal > 0) || unescapedBody.contains("\"dailyActivityComplete\":true")
+                    dailySetDone = dailySetProgress >= dailySetTotal && dailySetTotal > 0
                 } else {
                     val dailySetItems = Regex("""Global_DailySet_[a-zA-Z0-9_]+""").findAll(unescapedBody).map { it.value }.toSet()
                     val completedMatches = Regex("""(?:Global_DailySet_|dailySetItem)[^}]*?"(?:isCompleted|complete)"\s*:\s*true""").findAll(unescapedBody).count()
                     dailySetTotal = if (dailySetItems.isNotEmpty()) minOf(dailySetItems.size, 3) else 3
                     dailySetProgress = minOf(completedMatches, dailySetTotal)
-                    dailySetDone = (dailySetProgress >= dailySetTotal && dailySetTotal > 0) || unescapedBody.contains("\"dailyActivityComplete\":true")
+                    dailySetDone = dailySetProgress >= dailySetTotal && dailySetTotal > 0
                 }
             }
 
-            val existing = if (!email.isNullOrBlank()) latestTelemetryMap[email] else null
-            val breakdownFromHtml = parsePointsBreakdownHtml(unescapedBody)
-            var pcMax = existing?.pcMax ?: if (level == 1) 30 else 90
-            var pcProgress = existing?.pcProgress ?: 0
-            var mobileMax = existing?.mobileMax ?: if (level == 1) 0 else 60
-            var mobileProgress = existing?.mobileProgress ?: 0
-            var edgeMax = existing?.edgeMax ?: 0
-            var edgeProgress = existing?.edgeProgress ?: 0
+            val existing = accountId?.takeIf { it.isNotBlank() }?.let { latestTelemetryMap[it] }
+                ?: email?.takeIf { it.isNotBlank() }?.let { latestTelemetryMap[it] }
+            var pcMax = jsonPcMax ?: (existing?.pcMax ?: if (level == 1) 30 else 90)
+            var pcProgress = jsonPcProgress ?: (existing?.pcProgress ?: 0)
+            var mobileMax = jsonMobMax ?: (existing?.mobileMax ?: if (level == 1) 0 else 60)
+            var mobileProgress = jsonMobProgress ?: (existing?.mobileProgress ?: 0)
+            var edgeMax = jsonEdgeMax ?: (existing?.edgeMax ?: 0)
+            var edgeProgress = jsonEdgeProgress ?: (existing?.edgeProgress ?: 0)
 
-            if (breakdownFromHtml.isSuccess) {
-                pcProgress = breakdownFromHtml.pcProgress
-                if (breakdownFromHtml.pcMax > 0) pcMax = breakdownFromHtml.pcMax
-                mobileProgress = breakdownFromHtml.mobileProgress
-                if (breakdownFromHtml.mobileMax > 0) mobileMax = breakdownFromHtml.mobileMax
-                edgeProgress = breakdownFromHtml.edgeProgress
-                edgeMax = breakdownFromHtml.edgeMax
-            } else if (parsedSearchDailyPoints != null) {
-                val knownMob = existing?.mobileProgress ?: 0
-                if (knownMob > 0) {
-                    mobileProgress = minOf(knownMob, mobileMax)
-                    pcProgress = minOf(maxOf(0, parsedSearchDailyPoints - mobileProgress), pcMax)
-                } else if (level == 1) {
-                    pcProgress = minOf(parsedSearchDailyPoints, pcMax)
-                    mobileProgress = 0
-                } else {
-                    val existingPc = existing?.pcProgress
-                    if (existingPc != null) {
-                        pcProgress = minOf(existingPc, pcMax)
-                        if (mobileMax > 0 && parsedSearchDailyPoints > pcProgress) {
-                            mobileProgress = minOf(parsedSearchDailyPoints - pcProgress, mobileMax)
-                        } else {
-                            mobileProgress = 0
-                        }
-                    } else {
+            if (jsonPcProgress == null && jsonMobProgress == null) {
+                val breakdownFromHtml = parsePointsBreakdownHtml(unescapedBody)
+                if (breakdownFromHtml.isSuccess) {
+                    pcProgress = breakdownFromHtml.pcProgress
+                    if (breakdownFromHtml.pcMax > 0) pcMax = breakdownFromHtml.pcMax
+                    mobileProgress = breakdownFromHtml.mobileProgress
+                    if (breakdownFromHtml.mobileMax > 0) mobileMax = breakdownFromHtml.mobileMax
+                    edgeProgress = breakdownFromHtml.edgeProgress
+                    edgeMax = breakdownFromHtml.edgeMax
+                } else if (parsedSearchDailyPoints != null) {
+                    val knownMob = existing?.mobileProgress ?: 0
+                    if (knownMob > 0) {
+                        mobileProgress = minOf(knownMob, mobileMax)
+                        pcProgress = minOf(maxOf(0, parsedSearchDailyPoints - mobileProgress), pcMax)
+                    } else if (level == 1) {
                         pcProgress = minOf(parsedSearchDailyPoints, pcMax)
-                        if (mobileMax > 0 && parsedSearchDailyPoints > pcMax) {
-                            mobileProgress = minOf(parsedSearchDailyPoints - pcMax, mobileMax)
+                        mobileProgress = 0
+                    } else {
+                        val existingPc = existing?.pcProgress
+                        if (existingPc != null) {
+                            pcProgress = minOf(existingPc, pcMax)
+                            if (mobileMax > 0 && parsedSearchDailyPoints > pcProgress) {
+                                mobileProgress = minOf(parsedSearchDailyPoints - pcProgress, mobileMax)
+                            } else {
+                                mobileProgress = 0
+                            }
                         } else {
-                            mobileProgress = 0
+                            pcProgress = minOf(parsedSearchDailyPoints, pcMax)
+                            mobileProgress = minOf(maxOf(0, parsedSearchDailyPoints - pcMax), mobileMax)
                         }
                     }
                 }
             }
 
             val readMatch = Regex("""(?:readNews|read_to_earn|readToEarn)[^0-9]{1,10}(\d+)""").find(unescapedBody)
-            val readNewsProgress = readMatch?.groupValues?.get(1)?.toIntOrNull() ?: (existing?.readNewsProgress ?: 0)
-            val readNewsMax = 30
+            val readNewsProgress = jsonReadNewsProgress ?: (readMatch?.groupValues?.get(1)?.toIntOrNull() ?: (existing?.readNewsProgress ?: 0))
+            val readNewsMax = jsonReadNewsMax ?: 30
 
             val dailyActivitiesProgress = existing?.dailyActivitiesProgress ?: (dailySetProgress * 10)
             val dailyActivitiesMax = existing?.dailyActivitiesMax ?: (dailySetTotal * 10)
@@ -1271,6 +1605,9 @@ object RewardsBalanceExtractor {
 
             val isSuccess = availablePoints > 0 || lifetimePoints > 0
             val effectiveEarnedToday = parsedTodaysPoints ?: (existing?.pointsEarnedToday ?: (pcProgress + mobileProgress + edgeProgress))
+            val isRewardsUser = jsonIsRewardsUser ?: (
+                availablePoints > 0 || lifetimePoints > 0 || !email.isNullOrBlank() || !profileName.isNullOrBlank()
+            )
 
             val result = ExtractedRewardsBalance(
                 availablePoints = availablePoints,
@@ -1288,6 +1625,7 @@ object RewardsBalanceExtractor {
                 isAllMaxedOut = isAllMaxedOut,
                 email = email,
                 profileName = profileName,
+                country = country,
                 level = level,
                 claimablePoints = claimablePoints,
                 streakProtectionOn = streakProtectionOn,
@@ -1305,8 +1643,13 @@ object RewardsBalanceExtractor {
                 puzzleDailySearchesMax = 3,
                 puzzleWeeksLeft = 0,
                 nextResetTimestampMs = computeNextResetTimestampMs(),
-                cooldownEndTimestampMs = existing?.cooldownEndTimestampMs ?: 0L
+                cooldownEndTimestampMs = existing?.cooldownEndTimestampMs ?: 0L,
+                isRewardsUser = isRewardsUser,
+                hasExactCounters = (jsonPcProgress != null && jsonMobProgress != null)
             )
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = result
+            }
             if (!email.isNullOrBlank()) {
                 latestTelemetryMap[email] = result
             }
@@ -1322,7 +1665,8 @@ object RewardsBalanceExtractor {
         endpointUrl: String,
         bingCookies: String,
         userAgent: String,
-        proxyUrl: String? = null
+        proxyUrl: String? = null,
+        accountId: String? = null
     ): ExtractedRewardsBalance {
         var connection: HttpURLConnection? = null
         try {
@@ -1366,7 +1710,7 @@ object RewardsBalanceExtractor {
             }
 
             val json = JSONObject(responseBody)
-            return parseFlyoutJsonPayload(json)
+            return parseFlyoutJsonPayload(json, accountId)
         } catch (e: Exception) {
             return ExtractedRewardsBalance(isSuccess = false, source = "http_error")
         } finally {
@@ -1374,47 +1718,72 @@ object RewardsBalanceExtractor {
         }
     }
 
-    fun parseFlyoutJsonPayload(json: JSONObject): ExtractedRewardsBalance {
+    fun parseFlyoutJsonPayload(json: JSONObject, accountId: String? = null): ExtractedRewardsBalance {
+        checkDayRollover()
         try {
-            val flyout = json.optJSONObject("flyoutResult") ?: json
+            val dashboard = json.optJSONObject("dashboard")
+            val flyout = json.optJSONObject("flyoutResult") ?: dashboard ?: json
             val userStatus = flyout.optJSONObject("userStatus")
+                ?: dashboard?.optJSONObject("userStatus")
                 ?: json.optJSONObject("userStatus")
                 ?: json.optJSONObject("UserStatus")
                 ?: flyout
-            val userInfo = json.optJSONObject("userInfo") ?: flyout.optJSONObject("userInfo")
-            val isRewardsUser = when {
-                userStatus.has("isRewardsUser") -> userStatus.optBoolean("isRewardsUser", true)
-                flyout.has("isRewardsUser") -> flyout.optBoolean("isRewardsUser", true)
-                json.has("isRewardsUser") -> json.optBoolean("isRewardsUser", true)
-                else -> true
-            }
+            val userInfo = json.optJSONObject("userInfo") ?: flyout.optJSONObject("userInfo") ?: dashboard?.optJSONObject("userInfo")
+            val userProfile = userStatus.optJSONObject("userProfile")
+                ?: flyout.optJSONObject("userProfile")
+                ?: dashboard?.optJSONObject("userProfile")
+                ?: json.optJSONObject("userProfile")
+
             val rootUserId = json.optString("userId", "")
                 .ifBlank { flyout.optString("userId", "") }
+                .ifBlank { dashboard?.optString("userId", "") ?: "" }
                 .ifBlank { userStatus.optString("userId", "") }
                 .ifBlank { userInfo?.optString("userId", "") ?: "" }
-                .ifBlank { flyout.optJSONObject("userProfile")?.optString("userId", "") ?: "" }
+                .ifBlank { userProfile?.optString("userId", "") ?: "" }
 
             val availablePoints = userStatus.optInt("availablePoints", -1)
                 .takeIf { it >= 0 }
+                ?: dashboard?.optInt("availablePoints", -1)?.takeIf { it >= 0 }
                 ?: json.optInt("availablePoints", -1).takeIf { it >= 0 }
                 ?: userInfo?.optInt("balance", -1)?.takeIf { it >= 0 }
                 ?: flyout.optInt("availablePoints", 0)
             val lifetimePoints = userStatus.optInt("lifetimePoints", -1)
                 .takeIf { it > 0 }
+                ?: dashboard?.optInt("lifetimePoints", -1)?.takeIf { it > 0 }
                 ?: json.optInt("lifetimePoints", -1).takeIf { it > 0 }
                 ?: userInfo?.optInt("lifetimePoints", 0)
                 ?: 0
 
             val streakInfo = userStatus.optJSONObject("streakInfo")
                 ?: flyout.optJSONObject("streakInfo")
+                ?: dashboard?.optJSONObject("streakInfo")
                 ?: json.optJSONObject("streakInfo")
                 ?: userStatus.optJSONObject("dailyStreak")
             val streakPromotion = flyout.optJSONObject("streakPromotion")
                 ?: userStatus.optJSONObject("streakPromotion")
+                ?: dashboard?.optJSONObject("streakPromotion")
                 ?: json.optJSONObject("streakPromotion")
             val streakCount = streakInfo?.optInt("streakCount", -1)?.takeIf { it >= 0 }
                 ?: streakPromotion?.optInt("activityProgress", -1)?.takeIf { it >= 0 }
-                ?: userStatus.optInt("streakCount", json.optInt("streakCount", 0))
+                ?: userStatus.optInt("streakCount", json.optInt("streakCount", dashboard?.optInt("streakCount", 0) ?: 0))
+
+            val email = userProfile?.optString("email", "")?.takeIf { it.isNotBlank() }
+                ?: userStatus.optString("email", json.optString("email", dashboard?.optString("email", "") ?: "")).takeIf { it.isNotBlank() }
+            val country = userProfile?.optString("country", "")?.takeIf { it.isNotBlank() }
+                ?: userStatus.optString("country", json.optString("country", dashboard?.optString("country", "") ?: "")).takeIf { it.isNotBlank() }
+            val profileName = userProfile?.optString("name", "")?.takeIf { it.isNotBlank() }
+                ?: userStatus.optString("name", json.optString("name", dashboard?.optString("name", "") ?: "")).takeIf { it.isNotBlank() }
+
+            val isRewardsUserExplicit = when {
+                userStatus.has("isRewardsUser") -> userStatus.optBoolean("isRewardsUser")
+                flyout.has("isRewardsUser") -> flyout.optBoolean("isRewardsUser")
+                dashboard?.has("isRewardsUser") == true -> dashboard.optBoolean("isRewardsUser")
+                json.has("isRewardsUser") -> json.optBoolean("isRewardsUser")
+                else -> null
+            }
+            val isRewardsUser = isRewardsUserExplicit ?: (
+                availablePoints > 0 || lifetimePoints > 0 || !email.isNullOrBlank() || rootUserId.isNotBlank()
+            )
 
             var pcProgress = 0
             var pcMax = 0
@@ -1436,49 +1805,75 @@ object RewardsBalanceExtractor {
             var monthlyLevelProgress = 0
             var monthlyLevelMax = 0
 
-            val counters = userStatus.optJSONObject("counters")
+            val counters: Any? = userStatus.optJSONObject("counters")
+                ?: userStatus.optJSONArray("counters")
                 ?: flyout.optJSONObject("counters")
+                ?: flyout.optJSONArray("counters")
+                ?: dashboard?.optJSONObject("counters")
+                ?: dashboard?.optJSONArray("counters")
                 ?: json.optJSONObject("counters")
+                ?: json.optJSONArray("counters")
                 ?: userInfo?.optJSONObject("counters")
+                ?: userInfo?.optJSONArray("counters")
 
-            // Đọc trực tiếp các object riêng biệt nếu Microsoft trả về counters.pcSearch / mobileSearch
-            val pcObj = counters?.optJSONObject("pcSearch")
-                ?: userStatus.optJSONObject("pcSearch")
-                ?: flyout.optJSONObject("pcSearch")
-            val mobObj = counters?.optJSONObject("mobileSearch")
-                ?: userStatus.optJSONObject("mobileSearch")
-                ?: flyout.optJSONObject("mobileSearch")
-            val edgeObj = counters?.optJSONObject("bonusSearch")
-                ?: counters?.optJSONObject("edgeSearch")
-                ?: userStatus.optJSONObject("bonusSearch")
+            val pcAliases = arrayOf("pcSearch", "desktopSearch", "pc", "desktop")
+            val mobAliases = arrayOf("mobileSearch", "phoneSearch", "mobile", "phone")
+            val edgeAliases = arrayOf("bonusSearch", "edgeSearch", "bonusPoints", "edgePoints", "edgeBonus", "bonusSearchPoints", "bonus", "edge")
+
+            val pcObj = extractCounterObj(counters, *pcAliases)
+                ?: extractCounterObj(userStatus, *pcAliases)
+                ?: extractCounterObj(flyout, *pcAliases)
+                ?: extractCounterObj(dashboard, *pcAliases)
+                ?: extractCounterObj(json, *pcAliases)
+
+            val mobObj = extractCounterObj(counters, *mobAliases)
+                ?: extractCounterObj(userStatus, *mobAliases)
+                ?: extractCounterObj(flyout, *mobAliases)
+                ?: extractCounterObj(dashboard, *mobAliases)
+                ?: extractCounterObj(json, *mobAliases)
+
+            val edgeObj = extractCounterObj(counters, *edgeAliases)
+                ?: extractCounterObj(userStatus, *edgeAliases)
+                ?: extractCounterObj(flyout, *edgeAliases)
+                ?: extractCounterObj(dashboard, *edgeAliases)
+                ?: extractCounterObj(json, *edgeAliases)
 
             if (pcObj != null) {
-                pcProgress = pcObj.optInt("pointProgress", pcProgress)
-                val m = pcObj.optInt("pointProgressMax", pcObj.optInt("max", 0))
+                pcProgress = getCounterProgress(pcObj)
+                val m = getCounterMax(pcObj)
                 if (m > 0) pcMax = m
             }
             if (mobObj != null) {
-                mobileProgress = mobObj.optInt("pointProgress", mobileProgress)
-                val m = mobObj.optInt("pointProgressMax", mobObj.optInt("max", 0))
+                mobileProgress = getCounterProgress(mobObj)
+                val m = getCounterMax(mobObj)
                 if (m > 0) mobileMax = m
             }
             if (edgeObj != null) {
-                edgeProgress = edgeObj.optInt("pointProgress", edgeProgress)
-                val m = edgeObj.optInt("pointProgressMax", edgeObj.optInt("max", 0))
+                edgeProgress = getCounterProgress(edgeObj)
+                val m = getCounterMax(edgeObj)
                 if (m > 0) edgeMax = m
             }
 
-            val dailyPoint = counters?.optJSONArray("dailyPoint")
-                ?: counters?.optJSONArray("DailyPoint")
+            val dailyPoint = when (counters) {
+                is JSONObject -> counters.optJSONArray("dailyPoint") ?: counters.optJSONArray("DailyPoint")
+                is JSONArray -> counters
+                else -> null
+            } ?: userStatus.optJSONArray("dailyPoint")
+              ?: flyout.optJSONArray("dailyPoint")
+              ?: dashboard?.optJSONArray("dailyPoint")
+              ?: json.optJSONArray("dailyPoint")
+
             if (dailyPoint != null && dailyPoint.length() > 0) {
                 for (i in 0 until dailyPoint.length()) {
                     val item = dailyPoint.optJSONObject(i) ?: continue
-                    val prog = item.optInt("pointProgress", item.optInt("progress", 0))
-                    val maxP = item.optInt("pointProgressMax", item.optInt("max", item.optInt("maxPoint", 0)))
+                    val prog = getCounterProgress(item)
+                    val maxP = getCounterMax(item)
                     val rawName = if (item.isNull("name")) "" else item.optString("name", "")
                     val rawDesc = if (item.isNull("description")) "" else item.optString("description", "")
                     val rawTitle = if (item.isNull("title")) "" else item.optString("title", "")
-                    val desc = "$rawName $rawDesc $rawTitle".trim().lowercase()
+                    val rawActType = if (item.isNull("activityType")) "" else item.optString("activityType", "")
+                    val rawId = if (item.isNull("id")) "" else item.optString("id", item.optString("offerId", ""))
+                    val desc = "$rawName $rawDesc $rawTitle $rawActType $rawId".trim().lowercase()
                     // Bộ đếm tổng cấp độ tháng (pointProgressMax > 200 như 1360, 1330, 750, 500) khi không có tên rổ tìm kiếm cụ thể
                     if (maxP > 200 && desc.isBlank()) {
                         monthlyLevelProgress = prog
@@ -1486,7 +1881,7 @@ object RewardsBalanceExtractor {
                         continue
                     }
                     totalPointsEarned += prog
-                    if (desc.contains("edge") || desc.contains("trình duyệt edge")) {
+                    if (desc.contains("edge") || desc.contains("bonus") || desc.contains("trình duyệt edge")) {
                         edgeProgress = prog
                         edgeMax = maxP
                     } else if (desc.contains("mobile") || desc.contains("phone") || desc.contains("di động") || desc.contains("điện thoại")) {
@@ -1499,27 +1894,17 @@ object RewardsBalanceExtractor {
                     } else if (desc.contains("pc") || desc.contains("desktop") || desc.contains("computer") || desc.contains("máy tính")) {
                         pcProgress = prog
                         pcMax = maxP
-                    } else {
-                        if (desc.contains("today") || desc.contains("hôm nay") || desc.contains("daily point") || maxP > 90) {
-                            totalPointsEarned = maxOf(totalPointsEarned, prog)
-                        } else if (i == 0 && pcMax == 0 && maxP in 1..150) {
-                            pcProgress = prog
-                            pcMax = maxP
-                        } else if (i == 1 && mobileMax == 0 && maxP in 1..100) {
-                            mobileProgress = prog
-                            mobileMax = maxP
-                        } else if (i == 2 && edgeMax == 0 && maxP in 1..30) {
-                            edgeProgress = prog
-                            edgeMax = maxP
-                        }
+                    } else if (desc.contains("today") || desc.contains("hôm nay") || desc.contains("daily point") || maxP > 90) {
+                        totalPointsEarned = maxOf(totalPointsEarned, prog)
                     }
                 }
             } else {
-                totalPointsEarned = userStatus.optInt("pointsEarnedToday", flyout.optInt("pointsEarnedToday", 0))
+                totalPointsEarned = userStatus.optInt("pointsEarnedToday", flyout.optInt("pointsEarnedToday", dashboard?.optInt("pointsEarnedToday", 0) ?: 0))
             }
 
             // Hỗ trợ cấu trúc Microsoft Rewards 2026 (New Levels Restructure: levelInfoPromotion & pointClaimCardPromotion)
             val levelInfoPromo = flyout.optJSONObject("levelInfoPromotion")
+                ?: dashboard?.optJSONObject("levelInfoPromotion")
                 ?: json.optJSONObject("levelInfoPromotion")
                 ?: userStatus.optJSONObject("levelInfoPromotion")
             val levelInfoAttrs = levelInfoPromo?.optJSONObject("attributes")
@@ -1529,12 +1914,11 @@ object RewardsBalanceExtractor {
                 levelInfoAttrs?.optString("level", "")?.takeIf { it.isNotBlank() }
                     ?: levelInfoPromo?.optString("level", "")?.takeIf { it.isNotBlank() }
                     ?: userInfo?.optJSONObject("profile")?.optJSONObject("attributes")?.optString("level", "")?.takeIf { it.isNotBlank() }
+                    ?: userProfile?.optString("level", "")?.takeIf { it.isNotBlank() }
                     ?: flyout.optJSONObject("userProfile")?.optString("level", "")?.takeIf { it.isNotBlank() }
                     ?: ""
             ).lowercase()
 
-            val email = userStatus.optString("email", json.optString("email", "")).takeIf { it.isNotBlank() }
-            val profileName = userStatus.optString("name", json.optString("name", "")).takeIf { it.isNotBlank() }
             val level = when {
                 levelStrFromAttrs.contains("newlevel1") || levelStrFromAttrs == "level1" || levelStrFromAttrs == "1" -> 1
                 levelStrFromAttrs.contains("2") || levelStrFromAttrs.contains("3") -> 2
@@ -1575,10 +1959,12 @@ object RewardsBalanceExtractor {
 
             // Tính trước todayDailySetEarnedPoints từ dailySetPromotions[todayKey] để chặn upperBound chính xác
             val dailySetPromos = flyout.optJSONObject("dailySetPromotions")
+                ?: dashboard?.optJSONObject("dailySetPromotions")
                 ?: json.optJSONObject("dailySetPromotions")
                 ?: userStatus.optJSONObject("dailySetPromotions")
             val dailySetPromosArr = if (dailySetPromos == null) {
                 flyout.optJSONArray("dailySetPromotions")
+                    ?: dashboard?.optJSONArray("dailySetPromotions")
                     ?: json.optJSONArray("dailySetPromotions")
                     ?: userStatus.optJSONArray("dailySetPromotions")
             } else null
@@ -1602,51 +1988,44 @@ object RewardsBalanceExtractor {
                 }
             }
 
-            // Nếu counters.dailyPoint không chứa breakdown tìm kiếm, khôi phục chính xác từ bing_search_daily_points + dailyCheckInPromotion
+            // Nếu counters.dailyPoint không chứa breakdown tìm kiếm, khôi phục chính xác từ bing_search_daily_points
             if (pcProgress == 0 && mobileProgress == 0 && bingSearchDailyPoints != null) {
                 val clampedSearchPts = bingSearchDailyPoints.coerceIn(0, 500)
-                if (dailyCheckInAttrs != null) {
-                    if (!partnerBingCompleted) {
-                        pcProgress = 0
+                val partnerBonus = if (partnerBingCompleted) ptsPerSearch else 0
+                val rawCombined = clampedSearchPts + partnerBonus
+                val searchFromToday = if (todaysPointsFromLevelInfo != null) {
+                    maxOf(
+                        0,
+                        todaysPointsFromLevelInfo + (if (partnerBingClaimPending) ptsPerSearch else 0) - todayDailySetEarnedPoints
+                    )
+                } else null
+
+                val effectiveCombined = if (searchFromToday != null) {
+                    if (searchFromToday == 0) {
+                        0
                     } else {
-                        val rawCombined = clampedSearchPts + ptsPerSearch
-                        val upperBound = if (todaysPointsFromLevelInfo != null) {
-                            maxOf(
-                                ptsPerSearch,
-                                todaysPointsFromLevelInfo + (if (partnerBingClaimPending) ptsPerSearch else 0) - todayDailySetEarnedPoints
-                            )
-                        } else {
-                            if (partnerBingCompleted) rawCombined else 0
-                        }
-                        val effectiveCombined = minOf(rawCombined, upperBound)
-                        pcProgress = minOf(effectiveCombined, effPcMax)
-                        if (effMobMax > 0 && effectiveCombined > effPcMax) {
-                            mobileProgress = minOf(effectiveCombined - effPcMax, effMobMax)
-                        }
+                        minOf(rawCombined, searchFromToday)
                     }
-                } else if ((todaysPointsFromLevelInfo ?: 0) <= todayDailySetEarnedPoints) {
-                    pcProgress = 0
                 } else {
-                    val existingMob = if (!email.isNullOrBlank()) latestTelemetryMap[email]?.mobileProgress ?: 0 else 0
+                    rawCombined
+                }
+
+                val existingMob = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it]?.mobileProgress } ?: 0
+                val existingPc = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it]?.pcProgress } ?: 0
+
+                if (level == 1) {
+                    pcProgress = minOf(effectiveCombined, effPcMax)
+                    mobileProgress = 0
+                } else {
                     if (existingMob > 0) {
                         mobileProgress = minOf(existingMob, effMobMax)
-                        pcProgress = minOf(maxOf(0, clampedSearchPts - mobileProgress), effPcMax)
-                    } else if (level == 1) {
-                        pcProgress = minOf(clampedSearchPts, effPcMax)
-                        mobileProgress = 0
+                        pcProgress = minOf(maxOf(0, effectiveCombined - mobileProgress), effPcMax)
+                    } else if (existingPc > 0) {
+                        pcProgress = minOf(existingPc, effPcMax)
+                        mobileProgress = minOf(maxOf(0, effectiveCombined - pcProgress), effMobMax)
                     } else {
-                        val existingPc = if (!email.isNullOrBlank()) latestTelemetryMap[email]?.pcProgress else null
-                        if (existingPc != null) {
-                            pcProgress = minOf(existingPc, effPcMax)
-                            if (effMobMax > 0 && clampedSearchPts > pcProgress) {
-                                mobileProgress = minOf(clampedSearchPts - pcProgress, effMobMax)
-                            }
-                        } else {
-                            pcProgress = minOf(clampedSearchPts, effPcMax)
-                            if (effMobMax > 0 && clampedSearchPts > effPcMax) {
-                                mobileProgress = minOf(clampedSearchPts - effPcMax, effMobMax)
-                            }
-                        }
+                        pcProgress = minOf(effectiveCombined, effPcMax)
+                        mobileProgress = minOf(maxOf(0, effectiveCombined - effPcMax), effMobMax)
                     }
                 }
             }
@@ -1691,7 +2070,7 @@ object RewardsBalanceExtractor {
             val parsedDailyTasks = mutableListOf<DailyTask>()
 
             fun parseDailySetItem(item: JSONObject, j: Int) {
-                val pMax = item.optInt("pointProgressMax", item.optInt("points", 10))
+                val pMax = item.optInt("pointProgressMax", item.optInt("points", 10)).let { if (it <= 0) 10 else it }
                 val pProg = item.optInt("pointProgress", 0)
                 val isDone = item.optBoolean("complete", false) || (pMax > 0 && pProg >= pMax)
                 if (isDone) dsFlyoutCompleted++
@@ -1706,9 +2085,10 @@ object RewardsBalanceExtractor {
                 val authKey = item.optString("hash", item.optString("authKey", ""))
                 val actType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                 val itemUserId = item.optString("userId", rootUserId).ifBlank { rootUserId }
-                val taskType = RewardsActivitiesEngine.detectTaskType(dest, title)
-                if (RewardsActivitiesEngine.isSafePromotion(title, dest, pMax) && parsedDailyTasks.none { it.id == offerId }) {
-                    parsedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId))
+                val description = item.optString("description", item.optString("desc", ""))
+                val taskType = RewardsActivitiesEngine.detectTaskType(dest, title, description)
+                if (parsedDailyTasks.none { it.id == offerId }) {
+                    parsedDailyTasks.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, actType, itemUserId, description))
                 }
             }
 
@@ -1720,13 +2100,14 @@ object RewardsBalanceExtractor {
                 }
             }
             val morePromos = flyout.optJSONArray("morePromotions")
+                ?: dashboard?.optJSONArray("morePromotions")
                 ?: json.optJSONArray("morePromotions")
                 ?: userStatus.optJSONArray("morePromotions")
                 ?: flyout.optJSONArray("additionalPromotions")
             if (morePromos != null) {
                 for (j in 0 until morePromos.length()) {
                     val item = morePromos.optJSONObject(j) ?: continue
-                    val m = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else if (item.has("points")) item.optInt("points", 0) else 10
+                    val m = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else item.optInt("points", 0)
                     val p = item.optInt("pointProgress", if (item.optBoolean("complete", false)) m else 0)
                     val mTitle = (item.optString("title", "") + " " + item.optString("name", "")).lowercase()
                     if (readNewsProgress == 0 && (mTitle.contains("read") || mTitle.contains("news"))) {
@@ -1741,6 +2122,7 @@ object RewardsBalanceExtractor {
                     val exclStatus = item.optString("exclusiveLockedFeatureStatus", "").lowercase(java.util.Locale.ROOT)
                     val isUnlockedAttr = item.optJSONObject("attributes")?.optString("is_unlocked", "True") ?: "True"
                     val isLockedByLevel = (offerId.contains("locked_level2", ignoreCase = true) && level < 2) ||
+                        (dest.contains("/levelbenefitexclusive", ignoreCase = true) && level < 2) ||
                         exclStatus == "locked" ||
                         isUnlockedAttr.equals("False", ignoreCase = true) ||
                         item.optBoolean("isLocked", false)
@@ -1752,10 +2134,11 @@ object RewardsBalanceExtractor {
                     val authKey = item.optString("hash", item.optString("authKey", ""))
                     val actType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                     val itemUserId = item.optString("userId", rootUserId).ifBlank { rootUserId }
-                    val taskType = RewardsActivitiesEngine.detectTaskType(dest, title)
+                    val description = item.optString("description", item.optString("desc", ""))
+                    val taskType = RewardsActivitiesEngine.detectTaskType(dest, title, description)
                     val isDone = item.optBoolean("complete", false) || (m > 0 && p >= m)
-                    if (RewardsActivitiesEngine.isSafePromotion(title, dest, m) && parsedDailyTasks.none { it.id == offerId }) {
-                        parsedDailyTasks.add(DailyTask(offerId, title, m, dest, taskType, isDone, authKey, actType, itemUserId))
+                    if (RewardsActivitiesEngine.isSafePromotion(title, dest, m, description) && parsedDailyTasks.none { it.id == offerId }) {
+                        parsedDailyTasks.add(DailyTask(offerId, title, m, dest, taskType, isDone, authKey, actType, itemUserId, description))
                     }
                 }
             }
@@ -1815,7 +2198,7 @@ object RewardsBalanceExtractor {
                 ?.toIntOrNull() ?: 0
             val breakdownStr = levelInfoAttrs?.optString("claimable_points_breakdown", "") ?: ""
             val breakdownClaimable = if (breakdownStr.isNotBlank()) {
-                Regex(""""TotalClaimablePoints"\s*:\s*(\d+)""").find(breakdownStr)?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                runCatching { JSONObject(breakdownStr).optInt("TotalClaimablePoints") }.getOrDefault(0).coerceAtLeast(0)
             } else 0
             var promoClaimable = 0
             if (morePromos != null) {
@@ -1840,13 +2223,9 @@ object RewardsBalanceExtractor {
                 ?: streakInfo?.optBoolean("isProtectionEnabled", false)
                 ?: userStatus.optBoolean("streakProtectionOn", false)
 
-            val dailySetObj = flyout.optJSONObject("dailySet")
-                ?: json.optJSONObject("dailySet")
-                ?: userStatus.optJSONObject("dailySet")
-            val dsDoneFromObj = dailySetObj?.optBoolean("complete", false) ?: false
-            val dailySetDone = (dsFlyoutTotal > 0 && dsFlyoutCompleted >= dsFlyoutTotal) || dsDoneFromObj
+            val dailySetDone = dsFlyoutTotal > 0 && dsFlyoutCompleted >= dsFlyoutTotal
             val dailySetTotal = if (dsFlyoutTotal > 0) dsFlyoutTotal else 3
-            val dailySetProgress = if (dsFlyoutTotal > 0) dsFlyoutCompleted else (dailySetObj?.optInt("progress", if (dailySetDone) dailySetTotal else 0) ?: (if (dailySetDone) dailySetTotal else 0))
+            val dailySetProgress = if (dsFlyoutTotal > 0) minOf(dsFlyoutCompleted, dailySetTotal) else 0
 
             val result = ExtractedRewardsBalance(
                 availablePoints = availablePoints,
@@ -1864,6 +2243,7 @@ object RewardsBalanceExtractor {
                 isAllMaxedOut = isAllMaxedOut,
                 email = email,
                 profileName = profileName,
+                country = country,
                 level = level,
                 claimablePoints = claimablePoints,
                 streakProtectionOn = streakProtectionOn,
@@ -1888,8 +2268,12 @@ object RewardsBalanceExtractor {
                 redeemGoalTitle = redeemGoalTitle,
                 redeemGoalMax = redeemGoalMax,
                 isAccountSuspended = isAccountSuspended,
-                isRewardsUser = isRewardsUser
+                isRewardsUser = isRewardsUser,
+                hasExactCounters = (pcObj != null && mobObj != null) || (dailyPoint != null && dailyPoint.length() > 0)
             )
+            if (!accountId.isNullOrBlank()) {
+                latestTelemetryMap[accountId] = result
+            }
             if (!email.isNullOrBlank()) {
                 latestTelemetryMap[email] = result
             }
@@ -1947,12 +2331,16 @@ object RewardsBalanceExtractor {
             }
 
             val json = JSONObject(responseBody)
-            val flyout = json.optJSONObject("flyoutResult") ?: json
-            val userStatus = flyout.optJSONObject("userStatus") ?: json.optJSONObject("userStatus")
+            val dashboard = json.optJSONObject("dashboard")
+            val flyout = json.optJSONObject("flyoutResult") ?: dashboard ?: json
+            val userStatus = flyout.optJSONObject("userStatus")
+                ?: dashboard?.optJSONObject("userStatus")
+                ?: json.optJSONObject("userStatus")
 
             return when {
                 userStatus?.has("isRewardsUser") == true -> userStatus.optBoolean("isRewardsUser", false)
                 flyout.has("isRewardsUser") -> flyout.optBoolean("isRewardsUser", false)
+                dashboard?.has("isRewardsUser") == true -> dashboard.optBoolean("isRewardsUser", false)
                 json.has("isRewardsUser") -> json.optBoolean("isRewardsUser", false)
                 else -> false
             }
@@ -1976,10 +2364,11 @@ object RewardsBalanceExtractor {
 
     fun parsePointsBreakdownHtml(html: String): PointsBreakdownResult {
         if (html.isBlank()) return PointsBreakdownResult()
-        val pcMatch = Regex("""(?:Desktop\s*(?:Bing)?\s*search|PC\s*search|tìm\s*kiếm\s*trên\s*(?:máy\s*tính|pc))[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
-        val mobMatch = Regex("""(?:Mobile\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:thiết\s*bị\s*)?di\s*động)[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
-        val edgeMatch = Regex("""(?:Microsoft\s*Edge\s*bonus|Edge\s*bonus|thưởng\s*edge)[^0-9]*?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(html)
-        val offersMatch = Regex("""(?:Offers?|Other\s*activities|hoạt\s*động\s*khác)[^0-9]*?(\d+)""", RegexOption.IGNORE_CASE).find(html)
+        val cleanText = html.replace(Regex("<[^>]+>"), " ")
+        val pcMatch = Regex("""(?:Desktop\s*(?:Bing)?\s*search|PC\s*search|tìm\s*kiếm\s*trên\s*(?:máy\s*tính|pc))[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
+        val mobMatch = Regex("""(?:Mobile\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:thiết\s*bị\s*)?di\s*động)[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
+        val edgeMatch = Regex("""(?:Microsoft\s*Edge\s*bonus|Edge\s*bonus|thưởng\s*edge)[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
+        val offersMatch = Regex("""(?:Offers?|Other\s*activities|hoạt\s*động\s*khác)[\s\S]{0,120}?(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
 
         val pcProg = pcMatch?.groupValues?.get(1)?.toIntOrNull()
         val pcMax = pcMatch?.groupValues?.get(2)?.toIntOrNull()

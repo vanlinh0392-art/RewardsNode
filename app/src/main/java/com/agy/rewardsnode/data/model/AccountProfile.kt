@@ -8,8 +8,8 @@ data class AccountProfile(
     val id: String, // UUID hoặc email hash làm định danh thư mục profile
     var email: String,
     var profileName: String,
-    var level: Int = 2, // Level 1 (30 pts PC) hoặc Level 2 (90 pts PC + 60 pts Mobile)
-    var targetSearches: Int = 55, // Tự động: Level 1 = 35 (PC + Mobile trial + Edge), Level 2 = 55 lượt
+    var level: Int = 1, // Level 1 (30 pts PC) hoặc Level 2 (90 pts PC + 60 pts Mobile)
+    var targetSearches: Int = 35, // Tự động: Level 1 = 35 (PC + Mobile trial + Edge), Level 2 = 55 lượt
     var completedSearchesToday: Int = 0,
     var totalPoints: Int = 0,
     var availablePoints: Int = 0,
@@ -18,7 +18,7 @@ data class AccountProfile(
     var baselinePointsToday: Int = 0,
     var pointsEarnedToday: Int = 0,
     var pcProgress: Int = 0,
-    var pcMax: Int = 0,
+    var pcMax: Int = 30,
     var mobileProgress: Int = 0,
     var mobileMax: Int = 0,
     var edgeProgress: Int = 0,
@@ -93,38 +93,49 @@ data class AccountProfile(
             baselinePointsToday = balance.availablePoints
             baselineDate = todayStr
         }
-        pointsEarnedToday = if (balance.pointsEarnedToday > 0) {
+        val calcEarned = maxOf(0, availablePoints - baselinePointsToday)
+        this.pointsEarnedToday = if (balance.pointsEarnedToday > 0) {
             balance.pointsEarnedToday
         } else {
-            maxOf(0, availablePoints - baselinePointsToday)
+            if (wasSameDay) maxOf(this.pointsEarnedToday, calcEarned) else calcEarned
         }
         if (balance.pcMax > 0) {
-            val isAuthoritativeFlyout = balance.source.startsWith("flyout_http")
+            val isAuthoritativeFlyout = balance.source.startsWith("flyout_http") || balance.source.contains("breakdown")
             if (!(wasSameDay && !isAuthoritativeFlyout && pcMax == balance.pcMax && pcProgress > balance.pcProgress)) {
-                pcProgress = balance.pcProgress
+                // Nếu nguồn không phải authoritative breakdown gửi mobileProgress = 0 và gộp điểm mobile vào pcProgress
+                if (wasSameDay && this.mobileProgress > 0 && balance.mobileProgress == 0 && balance.pcProgress > this.pcProgress && !balance.source.contains("breakdown")) {
+                    pcProgress = maxOf(this.pcProgress, balance.pcProgress - this.mobileProgress)
+                } else {
+                    pcProgress = balance.pcProgress
+                }
             }
             pcMax = balance.pcMax
         }
-        if (balance.source.startsWith("flyout_http")) {
+        if (balance.mobileMax > 0) {
+            mobileMax = balance.mobileMax
+            val isExact = balance.source.contains("breakdown") || balance.hasExactCounters
+            mobileProgress = if (wasSameDay && !isExact) maxOf(mobileProgress, balance.mobileProgress) else balance.mobileProgress
+        } else if (balance.source.startsWith("flyout_http") && level < 2) {
             mobileMax = balance.mobileMax
             mobileProgress = balance.mobileProgress
+        }
+        if (balance.edgeMax > 0) {
             edgeMax = balance.edgeMax
-            edgeProgress = balance.edgeProgress
-        } else {
-            if (balance.mobileMax > 0) {
-                mobileMax = balance.mobileMax
-                mobileProgress = if (wasSameDay) maxOf(mobileProgress, balance.mobileProgress) else balance.mobileProgress
-            }
-            if (balance.edgeMax > 0) {
-                edgeMax = balance.edgeMax
-                edgeProgress = if (wasSameDay) maxOf(edgeProgress, balance.edgeProgress) else balance.edgeProgress
-            }
+            edgeProgress = if (wasSameDay) maxOf(edgeProgress, balance.edgeProgress) else balance.edgeProgress
         }
-        claimablePoints = balance.claimablePoints
+        if (balance.source != "serp_id_rc" || balance.claimablePoints > 0) {
+            claimablePoints = balance.claimablePoints
+        }
         if (balance.readNewsMax > 0) {
-            readMax = balance.readNewsMax
-            readProgress = maxOf(readProgress, balance.readNewsProgress)
+            this.readMax = balance.readNewsMax
+            this.readProgress = if (wasSameDay) maxOf(this.readProgress, balance.readNewsProgress) else balance.readNewsProgress
         }
+        this.dailySetTotal = if (balance.dailySetTotal > 0) balance.dailySetTotal else (if (this.dailySetTotal > 0) this.dailySetTotal else 3)
+        this.dailySetDone = balance.dailySetDone || (this.dailySetDone && wasSameDay)
+        this.dailySetProgress = if (wasSameDay) maxOf(this.dailySetProgress, balance.dailySetProgress) else balance.dailySetProgress
+
+        if (balance.puzzlePiecesCurrent > 0) this.puzzleProgress = balance.puzzlePiecesCurrent
+        if (balance.cooldownEndTimestampMs > System.currentTimeMillis()) this.cooldownUntilTimestamp = balance.cooldownEndTimestampMs
         if (balance.level in 1..2) {
             level = balance.level
         } else if (balance.mobileMax > 0 || balance.pcMax > 30) {
@@ -140,6 +151,49 @@ data class AccountProfile(
             if (targetSearches in 10..45) targetSearches else 35
         } else {
             if (targetSearches in 40..65) targetSearches else 55
+        }
+        if (todayStr != null && balance.isSuccess) {
+            this.lastActiveDate = todayStr
+        }
+    }
+
+    companion object {
+        fun createDefault(
+            id: String,
+            email: String,
+            profileName: String = ""
+        ): AccountProfile {
+            val name = if (profileName.isNotBlank()) {
+                profileName
+            } else if (email.contains("@")) {
+                "Profile ${email.substringBefore("@")}"
+            } else {
+                "Profile ${id.take(6)}"
+            }
+            return AccountProfile(
+                id = id,
+                email = email,
+                profileName = name,
+                level = 1,
+                targetSearches = 35,
+                availablePoints = 0,
+                totalPoints = 0,
+                streakCount = 0,
+                pcProgress = 0,
+                pcMax = 30,
+                mobileProgress = 0,
+                mobileMax = 0,
+                edgeProgress = 0,
+                edgeMax = 0,
+                readProgress = 0,
+                readMax = 30,
+                dailySetDone = false,
+                dailySetProgress = 0,
+                dailySetTotal = 3,
+                claimablePoints = 0,
+                pointsEarnedToday = 0,
+                baselinePointsToday = 0
+            )
         }
     }
 }

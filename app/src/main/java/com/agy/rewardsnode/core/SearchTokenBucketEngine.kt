@@ -23,8 +23,8 @@ object SearchTokenBucketEngine {
      * Tự động tái tạo cửa sổ mới nếu đã trôi qua quá 920 giây.
      */
     fun canExecuteSearch(account: AccountProfile, nowMs: Long = System.currentTimeMillis()): Boolean {
-        // 1. Nếu chưa từng khởi tạo hoặc đã qua 920s -> Khởi tạo/Tái tạo Window mới
-        if (account.searchWindowStartMs <= 0L || nowMs - account.searchWindowStartMs >= WINDOW_DURATION_MS) {
+        // 1. Nếu chưa từng khởi tạo, lùi giờ (clock-drift) hoặc đã qua 920s -> Khởi tạo/Tái tạo Window mới
+        if (account.searchWindowStartMs <= 0L || nowMs < account.searchWindowStartMs || nowMs - account.searchWindowStartMs >= WINDOW_DURATION_MS) {
             account.searchWindowStartMs = nowMs
             account.searchesInWindow = 0
             if (account.cooldownUntilTimestamp <= nowMs) {
@@ -52,8 +52,8 @@ object SearchTokenBucketEngine {
      * @return số lượt tìm kiếm đã tích lũy trong window hiện tại.
      */
     fun recordSearch(account: AccountProfile, nowMs: Long = System.currentTimeMillis()): Int {
-        // Đảm bảo window còn hiệu lực, nếu đã hết hạn thì reset trước
-        if (account.searchWindowStartMs <= 0L || nowMs - account.searchWindowStartMs >= WINDOW_DURATION_MS) {
+        // Đảm bảo window còn hiệu lực, nếu đã hết hạn hoặc clock-drift thì reset trước
+        if (account.searchWindowStartMs <= 0L || nowMs < account.searchWindowStartMs || nowMs - account.searchWindowStartMs >= WINDOW_DURATION_MS) {
             account.searchWindowStartMs = nowMs
             account.searchesInWindow = 0
             account.cooldownUntilTimestamp = 0L

@@ -288,4 +288,135 @@ class RewardsActivitiesEngineTest {
         val result = RewardsActivitiesEngine.executeSingleTaskHttp(task, cookiesJson = "")
         assertFalse("Should safely return false on blank URL without throwing exception", result)
     }
+
+    @Test
+    fun testDailyTaskDescriptionExtraction() {
+        val jsonArray = """
+            [
+                {
+                    "id": "task_desc_1",
+                    "title": "Kiểm tra kiến thức",
+                    "description": "Tham gia bài đố vui để nhận 30 điểm",
+                    "points": 30,
+                    "destination": "https://www.bing.com/search?q=test",
+                    "complete": false
+                },
+                {
+                    "id": "task_desc_2",
+                    "title": "Khảo sát tuần",
+                    "desc": "Bình chọn chủ đề tuần này",
+                    "pointProgressMax": 10,
+                    "destinationUrl": "https://www.bing.com/search?q=poll",
+                    "complete": false
+                }
+            ]
+        """.trimIndent()
+
+        val tasksFromArray = RewardsActivitiesEngine.parseDailyTasksFromArray(jsonArray)
+        assertEquals(2, tasksFromArray.size)
+        assertEquals("Tham gia bài đố vui để nhận 30 điểm", tasksFromArray[0].description)
+        assertEquals("Bình chọn chủ đề tuần này", tasksFromArray[1].description)
+        assertTrue(RewardsActivitiesEngine.isInteractiveDomTask(tasksFromArray[0]))
+        assertTrue(RewardsActivitiesEngine.isInteractiveDomTask(tasksFromArray[1]))
+
+        val jsonObject = """
+            {
+                "dailySetPromotions": {
+                    "today": [
+                        {
+                            "offerId": "ds_obj_1",
+                            "title": "Thủ đô các nước",
+                            "description": "Câu đố về các thủ đô trên thế giới",
+                            "points": 10,
+                            "destinationUrl": "https://www.bing.com/search?q=quiz",
+                            "complete": false
+                        }
+                    ]
+                },
+                "morePromotions": [
+                    {
+                        "id": "more_promo_1",
+                        "title": "Thử thách trắc nghiệm",
+                        "desc": "Trả lời câu đố hàng tuần",
+                        "points": 10,
+                        "destination": "https://www.bing.com/search?q=more",
+                        "complete": false
+                    }
+                ]
+            }
+        """.trimIndent()
+
+        val tasksFromObj = RewardsActivitiesEngine.parseDailyTasksFromJson(jsonObject)
+        assertEquals(2, tasksFromObj.size)
+        assertEquals("Câu đố về các thủ đô trên thế giới", tasksFromObj[0].description)
+        assertEquals("Trả lời câu đố hàng tuần", tasksFromObj[1].description)
+        assertTrue(RewardsActivitiesEngine.isInteractiveDomTask(tasksFromObj[0]))
+        assertTrue(RewardsActivitiesEngine.isInteractiveDomTask(tasksFromObj[1]))
+    }
+
+    @Test
+    fun testIsInteractiveDomTaskVietnameseKeywords() {
+        val keywords = listOf(
+            "trắc nghiệm", "đố vui", "câu đố", "thử thách", "thủ đô", "kiểm tra kiến thức",
+            "quiz", "trivia", "poll", "khảo sát", "bình chọn", "form=dsetqu", "btoption"
+        )
+
+        for (kw in keywords) {
+            val taskInTitle = DailyTask(
+                id = "task_t",
+                title = "Nhiệm vụ $kw hôm nay",
+                pointValue = 10,
+                destinationUrl = "https://www.bing.com/search",
+                taskType = "urlreward",
+                isCompleted = false
+            )
+            assertTrue("Should detect interactive DOM task for keyword '$kw' in title", RewardsActivitiesEngine.isInteractiveDomTask(taskInTitle))
+
+            val taskInDesc = DailyTask(
+                id = "task_d",
+                title = "Nhiệm vụ thường",
+                description = "Chi tiết về $kw tại đây",
+                pointValue = 10,
+                destinationUrl = "https://www.bing.com/search",
+                taskType = "urlreward",
+                isCompleted = false
+            )
+            assertTrue("Should detect interactive DOM task for keyword '$kw' in description", RewardsActivitiesEngine.isInteractiveDomTask(taskInDesc))
+
+            val taskInUrl = DailyTask(
+                id = "task_u",
+                title = "Nhiệm vụ URL",
+                description = "Chi tiết",
+                pointValue = 10,
+                destinationUrl = "https://www.bing.com/search?query=$kw",
+                taskType = "urlreward",
+                isCompleted = false
+            )
+            assertTrue("Should detect interactive DOM task for keyword '$kw' in url", RewardsActivitiesEngine.isInteractiveDomTask(taskInUrl))
+        }
+
+        val pureUrlTask = DailyTask(
+            id = "task_pure",
+            title = "Khám phá phong cảnh",
+            description = "Xem hình ảnh thiên nhiên đẹp",
+            pointValue = 10,
+            destinationUrl = "https://www.bing.com/search?q=nature",
+            taskType = "urlreward",
+            isCompleted = false
+        )
+        assertFalse("Pure urlreward without keywords must NOT require DOM interaction", RewardsActivitiesEngine.isInteractiveDomTask(pureUrlTask))
+    }
+
+    @Test
+    fun testCreateQuizSolverScriptVietnameseSelectors() {
+        val script = RewardsActivitiesEngine.createQuizSolverScript()
+        assertTrue(script.contains("input[value*=\"Bắt đầu\" i]"))
+        assertTrue(script.contains("input[value*=\"Làm bài\" i]"))
+        assertFalse("BUG-11: Không được chứa invalid jQuery selector button:contains('Bắt đầu')", script.contains("button:contains('Bắt đầu')"))
+        assertTrue(script.contains("btnTxt.indexOf('bắt đầu')"))
+        assertTrue(script.contains(".bt_option"))
+        assertTrue(script.contains(".wk_ans"))
+        assertTrue(script.contains("input[value*=\"Tiếp\" i]"))
+        assertTrue(script.contains("button[aria-label*=\"Tiếp\" i]"))
+    }
 }

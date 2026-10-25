@@ -149,30 +149,30 @@ class BingAppDaily60GateTest {
             email = "datetrack@example.com",
             profileName = "Date Track User",
             dailySetDone = false, // profile flag chưa bật
-            readProgress = 0       // profile progress chưa cập nhật
+            readProgress = 0,      // profile progress chưa cập nhật
+            lastActiveDate = todayStr
         )
 
-        val phase0Field = RewardsStateMachine::class.java.getDeclaredField("phase0CompletedDateMap").apply { isAccessible = true }
         val phase05Field = RewardsStateMachine::class.java.getDeclaredField("phase05CompletedDateMap").apply { isAccessible = true }
 
         @Suppress("UNCHECKED_CAST")
-        val phase0Map = phase0Field.get(stateMachine) as ConcurrentHashMap<String, String>
-        @Suppress("UNCHECKED_CAST")
         val phase05Map = phase05Field.get(stateMachine) as ConcurrentHashMap<String, String>
 
-        // Case A: Chưa có map nào ghi nhận hôm nay -> false
+        // Case A: Chưa có gì hoàn thành hôm nay -> false
         assertFalse(stateMachine.isBingApp60Of60Done(account, todayStr))
 
-        // Case B: Chỉ Phase 0 xong hôm nay (Daily Set) -> false
-        phase0Map[account.id] = todayStr
-        assertFalse(stateMachine.isBingApp60Of60Done(account, todayStr))
-
-        // Case C: Cả Phase 0 và Phase 0.5 đều ghi nhận hôm nay -> true
+        // Case B: Chỉ Phase 0.5 xong hôm nay (Read to Earn) nhưng Daily Set chưa xong -> false (ngăn chặn skip sớm)
         phase05Map[account.id] = todayStr
-        assertTrue("Cả phase0 và phase05 hoàn thành trong ngày -> Gate phải trả về true", stateMachine.isBingApp60Of60Done(account, todayStr))
+        assertFalse("Daily Set chưa xong thì dù phase05 hoàn thành vẫn không được mở Gate", stateMachine.isBingApp60Of60Done(account, todayStr))
+
+        // Case C: Daily Set xong và Phase 0.5 ghi nhận hôm nay -> true
+        account.dailySetDone = true
+        account.dailySetProgress = 3
+        account.dailySetTotal = 3
+        assertTrue("Cả Daily Set và phase05 hoàn thành trong ngày -> Gate phải trả về true", stateMachine.isBingApp60Of60Done(account, todayStr))
 
         // Case D: Hoàn thành hôm qua, hôm nay ngày mới -> false (Reset gate)
-        phase0Map[account.id] = yesterdayStr
+        account.lastActiveDate = yesterdayStr
         phase05Map[account.id] = yesterdayStr
         assertFalse("Dữ liệu ngày hôm qua không hợp lệ cho ngày hôm nay -> Gate phải trả về false", stateMachine.isBingApp60Of60Done(account, todayStr))
     }

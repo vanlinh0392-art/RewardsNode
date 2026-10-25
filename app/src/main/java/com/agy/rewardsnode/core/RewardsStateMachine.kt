@@ -53,7 +53,8 @@ class RewardsStateMachine(
         RewardsBalanceExtractor.extractPointsViaHttp(
             account.cookiesSnapshot,
             account.customUserAgent,
-            resolveProxyForAccount(account)
+            resolveProxyForAccount(account),
+            account.id
         )
     private var isRunning = false
     private var currentJob: Job? = null
@@ -83,14 +84,7 @@ class RewardsStateMachine(
     private val checkInCompletedDateMap = ConcurrentHashMap<String, String>()
     // Bảng theo dõi ngày khởi tạo baselinePointsToday của từng tài khoản
     private val baselineDateMap = ConcurrentHashMap<String, String>()
-    // Bảng theo dõi các Phase đã thử nghiệm không tăng điểm (đạt trần hoặc cạn ngạch) của từng tài khoản trong ngày
-    private val phaseExhaustedMap = ConcurrentHashMap<String, MutableSet<SearchPhase>>()
-    // Bảng ghi nhận các rổ điểm đã đạt trần trong phiên làm việc hiện tại
-    private val sessionFullBasketsMap = ConcurrentHashMap<String, MutableSet<SearchPhase>>()
-    // Bảng đếm số lần recheck của từng rổ trong phiên làm việc
-    private val sessionRecheckCountMap = ConcurrentHashMap<String, ConcurrentHashMap<SearchPhase, Int>>()
-    // Bảng theo dõi số lượt delta == 0 liên tiếp của từng phase
-    private val phaseZeroDeltaCountMap = ConcurrentHashMap<String, ConcurrentHashMap<SearchPhase, Int>>()
+
     // Bảng đếm số lần thử claim Ready-to-Claim trong ngày của từng tài khoản (tối đa maxClaimRetries lần/ngày chống lặp vô tận)
     private val claimAttemptCountMap = ConcurrentHashMap<String, Int>()
     // Tập hợp tài khoản đã được kiểm tra Ready-to-Claim khi khởi động phiên (Start Node)
@@ -172,12 +166,13 @@ class RewardsStateMachine(
 
     /**
      * Kiểm tra trạng thái hoàn thành toàn diện 60/60 điểm Bing App:
-     * - Daily Set (30đ): account.dailySetDone || phase0CompletedDateMap[account.id] == todayStr
-     * - MSN Read to Earn (30đ): account.readProgress >= 30 || phase05CompletedDateMap[account.id] == todayStr
+     * - Daily Set (30đ): account.dailySetDone || (account.dailySetProgress >= account.dailySetTotal && account.dailySetTotal > 0)
+     * - MSN Read to Earn (30đ): account.readProgress >= (if (account.readMax > 0) account.readMax else 30) || phase05CompletedDateMap[account.id] == todayStr
      */
     fun isBingApp60Of60Done(account: AccountProfile, todayStr: String): Boolean {
-        return (account.dailySetDone || phase0CompletedDateMap[account.id] == todayStr) &&
-            (account.readProgress >= 30 || phase05CompletedDateMap[account.id] == todayStr)
+        val isDailyDone = account.dailySetDone || (account.dailySetProgress >= account.dailySetTotal && account.dailySetTotal > 0)
+        val isReadDone = account.readProgress >= (if (account.readMax > 0) account.readMax else 30) || phase05CompletedDateMap[account.id] == todayStr
+        return isDailyDone && isReadDone
     }
 
     private fun extractDailySetSubset(tasks: List<DailyTask>): List<DailyTask> {
@@ -198,6 +193,25 @@ class RewardsStateMachine(
         return uncompleted.isNotEmpty() && uncompleted.all { task ->
             val offerKey = task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } }
             getOfferTriedCount(accountId, offerKey, todayStr) >= 2
+        }
+    }
+
+    private fun areAllMorePromotionsCompletedOrExhausted(
+        accountId: String,
+        dailyTasks: List<DailyTask>,
+        dailySetTasks: List<DailyTask>,
+        todayStr: String
+    ): Boolean {
+        val morePromoTasks = dailyTasks.filter { task ->
+            !dailySetTasks.any { it.id == task.id } &&
+            RewardsActivitiesEngine.isSafePromotion(task.title, task.destinationUrl, task.pointValue, task.description)
+        }
+        return morePromoTasks.all { task ->
+            task.isCompleted || getOfferTriedCount(
+                accountId,
+                task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } },
+                todayStr
+            ) >= 2
         }
     }
 
@@ -224,11 +238,11 @@ class RewardsStateMachine(
     private suspend fun runQuizStepLoop(targetWebView: WebView, task: DailyTask): Boolean {
         val quizTask = if (task.taskType.equals("quiz", ignoreCase = true)) task else task.copy(taskType = "quiz")
         var quizSolved = false
-        for (step in 1..8) {
+        for (step in 1..6) {
             val stepResult = RewardsActivitiesEngine.solveDailyTask(targetWebView, quizTask)
             if (stepResult) {
                 quizSolved = true
-                safeDelay(Random.nextLong(2200L, 3500L))
+                safeDelay(Random.nextLong(2500L, 4000L))
             } else {
                 break
             }
@@ -274,9 +288,6 @@ class RewardsStateMachine(
             if (postClaimBal.isSuccess && postClaimBal.availablePoints > 0) {
                 latestBalanceMap[account.id] = postClaimBal
                 RewardsBalanceExtractor.latestTelemetryMap[account.id] = postClaimBal
-                if (account.email.isNotBlank()) {
-                    RewardsBalanceExtractor.latestTelemetryMap[account.email] = postClaimBal
-                }
                 applyBalancePreservingExhaustedCap(account, postClaimBal, todayStr, account.baselinePointsToday)
                 account.claimablePoints = postClaimBal.claimablePoints
                 onAccountUpdated(account)
@@ -553,9 +564,6 @@ class RewardsStateMachine(
 
         val balance = latestBalanceMap[account.id]
             ?: RewardsBalanceExtractor.latestTelemetryMap[account.id]
-            ?: RewardsBalanceExtractor.latestTelemetryMap[account.email]
-
-        val exhausted = phaseExhaustedMap[account.id] ?: emptySet()
 
         val isLevel1 = (account.level < 2)
 
@@ -580,26 +588,13 @@ class RewardsStateMachine(
         val edgeMax = if (balance != null && balance.isSuccess) balance.edgeMax else (if (account.edgeMax > 0) account.edgeMax else 0)
         val edgeProgress = if (balance != null && balance.isSuccess) balance.edgeProgress else account.edgeProgress
 
-        // Tự động latch vào sessionFullBasketsMap khi đạt trần
-        if (pcMax > 0 && pcProgress >= pcMax) {
-            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_1_PC)
-        }
-        if (mobileMax > 0 && mobileProgress >= mobileMax) {
-            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
-        }
-        if (edgeMax > 0 && edgeProgress >= edgeMax) {
-            sessionFullBasketsMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_3_EDGE)
-        }
-
-        val sessionFull = sessionFullBasketsMap[account.id] ?: emptySet()
-        val isPcFullInSession = sessionFull.contains(SearchPhase.PHASE_1_PC)
-        val isMobFullInSession = sessionFull.contains(SearchPhase.PHASE_2_MOBILE)
-        val isEdgeFullInSession = sessionFull.contains(SearchPhase.PHASE_3_EDGE)
-
-        val isPcDone = (pcMax > 0 && pcProgress >= pcMax) || exhausted.contains(SearchPhase.PHASE_1_PC) || isPersistedSearchExhausted || isPcFullInSession
+        val isPcDone = (pcMax > 0 && maxOf(pcProgress, account.pcProgress) >= pcMax)
         // Level Gating: Nếu account.level < 2 hoặc mobileMax == 0, BỎ QUA Phase 2 (Mobile Search)
-        val isMobDone = (account.level < 2 || mobileMax == 0) || (mobileMax > 0 && mobileProgress >= mobileMax) || exhausted.contains(SearchPhase.PHASE_2_MOBILE) || isMobFullInSession
-        val isEdgeDone = (edgeMax == 0) || (edgeMax > 0 && edgeProgress >= edgeMax) || exhausted.contains(SearchPhase.PHASE_3_EDGE) || isEdgeFullInSession
+        // Đảm bảo khi account.mobileProgress >= account.mobileMax (60/60) -> Đánh dấu isMobDone = true ngay lập tức
+        val isMobMaxed = (account.mobileMax > 0 && account.mobileProgress >= account.mobileMax) ||
+                (mobileMax > 0 && (mobileProgress >= mobileMax || account.mobileProgress >= mobileMax))
+        val isMobDone = (account.level < 2 || mobileMax == 0) || isMobMaxed
+        val isEdgeDone = edgeMax == 0 || (edgeMax > 0 && maxOf(edgeProgress, account.edgeProgress) >= edgeMax)
 
         var phase = currentPhase
 
@@ -607,13 +602,7 @@ class RewardsStateMachine(
         if (phase == SearchPhase.PHASE_1_PC) {
             if (isPcDone) {
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_1_PC)) {
-                    val reason = if (isPcFullInSession) {
-                        "Đã đạt trần PC trong phiên ($pcProgress/$pcMax)"
-                    } else if (pcMax > 0 && pcProgress >= pcMax) {
-                        "Đã đạt tối đa rổ PC ($pcProgress/$pcMax)"
-                    } else {
-                        "Đã thử nghiệm PC không tăng thêm điểm"
-                    }
+                    val reason = "Đã đạt tối đa rổ PC (${maxOf(pcProgress, account.pcProgress)}/$pcMax)"
                     vlogManager?.logPoints(
                         "[SKIP-PC] Bỏ qua Phase 1 (PC Search) cho ${account.email}",
                         "$reason. Chuyển sang Phase 2 (Mobile Search).",
@@ -626,22 +615,24 @@ class RewardsStateMachine(
             }
         }
 
-        // Trước Phase 2: Nếu isMobDone -> ghi vlog [SKIP-MOB], chuyển sang Phase 3.
+        // Trước Phase 2: Nếu isMobDone -> ghi vlog [SKIP-MOB], chuyển sang Phase 1 PC (nếu còn thiếu) hoặc Phase 3.
         if (phase == SearchPhase.PHASE_2_MOBILE) {
             if (isMobDone) {
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_2_MOBILE)) {
+                    val currentMobProg = maxOf(mobileProgress, account.mobileProgress)
                     val reason = if (account.level < 2 || mobileMax == 0) {
                         "Level Gating: Tài khoản Level ${account.level} (<2) hoặc mobileMax == 0"
-                    } else if (isMobFullInSession || (mobileMax > 0 && mobileProgress >= mobileMax)) {
-                        "Đã đạt tối đa rổ Mobile ($mobileProgress/$mobileMax)"
                     } else {
-                        "Đã thử nghiệm Mobile không tăng thêm điểm"
+                        "Đã đạt tối đa rổ Mobile ($currentMobProg/$mobileMax)"
                     }
                     vlogManager?.logPoints(
                         "[SKIP-MOB] Bỏ qua Phase 2 (Mobile Search) cho ${account.email}",
-                        "$reason. Chuyển sang Phase 3 (Edge Search) hoặc kết thúc.",
+                        "$reason. Chuyển sang Phase 1 PC còn thiếu hoặc Phase 3 (Edge Search).",
                         account.email
                     )
+                }
+                if (!isPcDone) {
+                    return SearchPhase.PHASE_1_PC
                 }
                 phase = SearchPhase.PHASE_3_EDGE
             } else {
@@ -655,10 +646,8 @@ class RewardsStateMachine(
                 if (loggedSkips != null && loggedSkips.add(SearchPhase.PHASE_3_EDGE)) {
                     val reason = if (edgeMax == 0) {
                         "Không có rổ Edge Bonus (edgeMax == 0)"
-                    } else if (isEdgeFullInSession || (edgeMax > 0 && edgeProgress >= edgeMax)) {
-                        "Đã đạt tối đa rổ Edge ($edgeProgress/$edgeMax)"
                     } else {
-                        "Đã thử nghiệm Edge không tăng thêm điểm"
+                        "Đã đạt tối đa rổ Edge ($edgeProgress/$edgeMax)"
                     }
                     vlogManager?.logPoints(
                         "[SKIP-EDGE] Bỏ qua Phase 3 (Edge Search) cho ${account.email}",
@@ -699,8 +688,6 @@ class RewardsStateMachine(
     ) {
         if (isRunning) return
         isRunning = true
-        sessionFullBasketsMap.clear()
-        sessionRecheckCountMap.clear()
         startupClaimCheckedAccounts.clear()
         if (webView != null) {
             activeWebView = webView
@@ -762,6 +749,10 @@ class RewardsStateMachine(
                 for (account in candidateAccounts) {
                     if (!isActive || !isRunning) break
                     if (!account.isEnabled) continue
+                    if (account.lastActiveDate != todayStr) {
+                        account.dailySetDone = false
+                        account.dailySetProgress = 0
+                    }
                     if (encryptedPrefs?.isWifiOnly == true && wakeLockHelper?.isWifiConnected() == false) {
                         vlogManager?.logCooldown(
                             "[NET-GUARD] Tạm dừng chờ kết nối Wi-Fi (Chế độ Chỉ dùng Wi-Fi đang bật)",
@@ -809,6 +800,9 @@ class RewardsStateMachine(
                             vlogManager?.logPoints("[AUTO-RENEW] Đã tự động gia hạn cookie qua HTTP thành công cho ${account.email}", "", account.email)
                         } else {
                             vlogManager?.logPoints("[SKIP-EXPIRED] Bỏ qua tài khoản do cookies đã hết hạn: ${account.email}", "", account.email)
+                            account.cooldownUntilTimestamp = System.currentTimeMillis() + 15 * 60 * 1000L
+                            allAccountsFinished = false
+                            earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, account.cooldownUntilTimestamp)
                             continue
                         }
                     }
@@ -818,13 +812,15 @@ class RewardsStateMachine(
                     // Kiểm tra và reset bộ đếm nếu sang ngày mới, chuẩn hóa targetSearches (Level 1: 30-35 lượt, Level 2: 55 lượt)
                     val expectedTarget = if (account.level < 2) 35 else 55
                     val baselineDate = baselineDateMap[account.id] ?: account.lastActiveDate
-                    if (baselineDate != todayStr) {
+                    if (baselineDate != todayStr || account.lastActiveDate != todayStr) {
                         account.completedSearchesToday = 0
                         account.pointsEarnedToday = 0
                         account.pcProgress = 0
                         account.mobileProgress = 0
                         account.edgeProgress = 0
                         account.readProgress = 0
+                        account.dailySetDone = false
+                        account.dailySetProgress = 0
                         account.baselinePointsToday = account.availablePoints
                         account.lastActiveDate = todayStr
                         account.targetSearches = expectedTarget
@@ -834,10 +830,6 @@ class RewardsStateMachine(
                         phase0CompletedDateMap.remove(account.id)
                         phase05CompletedDateMap.remove(account.id)
                         checkInCompletedDateMap.remove(account.id)
-                        phaseExhaustedMap.remove(account.id)
-                        phaseZeroDeltaCountMap.remove(account.id)
-                        sessionFullBasketsMap.remove(account.id)
-                        sessionRecheckCountMap.remove(account.id)
                         claimAttemptCountMap.keys.removeIf { it.endsWith(":${account.id}") }
                         dapiAttemptCountMap.keys.removeIf { it.endsWith(":${account.id}") }
                         offerTriedCountMap.keys.removeIf { it.contains(":${account.id}:") }
@@ -867,12 +859,15 @@ class RewardsStateMachine(
                     if (!isCatchingUp) {
                         if (account.cookiesSnapshot.isNullOrBlank()) {
                             account.cookieExpired = true
+                            account.cooldownUntilTimestamp = System.currentTimeMillis() + 15 * 60 * 1000L
                             onAccountUpdated(account)
                             vlogManager?.logError(
                                 "[PRE-FLIGHT] Cookies trống",
-                                "Tài khoản ${account.email} không có cookies. Đánh dấu cookieExpired = true và bỏ qua.",
+                                "Tài khoản ${account.email} không có cookies. Đánh dấu cookieExpired = true, cooldown 15m và bỏ qua.",
                                 account.email
                             )
+                            allAccountsFinished = false
+                            earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, account.cooldownUntilTimestamp)
                             continue
                         }
 
@@ -945,13 +940,16 @@ class RewardsStateMachine(
 
                         if (isExpiredOrUnauthorized) {
                             account.cookieExpired = true
+                            account.cooldownUntilTimestamp = System.currentTimeMillis() + 15 * 60 * 1000L
                             onAccountUpdated(account)
                             vlogManager?.logError(
                                 "[PRE-FLIGHT] Cookies hết hạn hoặc không có quyền truy cập (401/403)",
-                                "Tài khoản ${account.email} trả về source: ${httpPing?.source ?: "HTTP_TIMEOUT"}. Đánh dấu cookieExpired = true và bỏ qua.",
+                                "Tài khoản ${account.email} trả về source: ${httpPing?.source ?: "HTTP_TIMEOUT"}. Đánh dấu cookieExpired = true, cooldown 15m và bỏ qua.",
                                 account.email
                             )
-                            onStatusUpdate("Tài khoản: ${account.email}", "Cookies hết hạn (401/403). Bỏ qua.")
+                            onStatusUpdate("Tài khoản: ${account.email}", "Cookies hết hạn (401/403). Cooldown 15m...")
+                            allAccountsFinished = false
+                            earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, account.cooldownUntilTimestamp)
                             continue
                         } else if (httpPing == null || !httpPing.isSuccess) {
                             vlogManager?.logNetwork(
@@ -973,12 +971,13 @@ class RewardsStateMachine(
                             }
                             applyBalancePreservingExhaustedCap(account, httpPing, todayStr)
                             val exhaustedDailyRetries = areAllDailySetOffersExhausted(account.id, extractDailySetSubset(httpPing.dailyTasks), todayStr)
-                            if (httpPing.dailySetTotal > 0) {
-                                account.dailySetDone = httpPing.dailySetDone || exhaustedDailyRetries
-                                account.dailySetProgress = httpPing.dailySetProgress
-                                account.dailySetTotal = httpPing.dailySetTotal
-                            }
-                            if (httpPing.dailySetDone || exhaustedDailyRetries) {
+                            val checkDailySetPing = extractDailySetSubset(httpPing.dailyTasks)
+                            val isPingDailySetDone = httpPing.dailySetDone || exhaustedDailyRetries
+                            account.dailySetDone = isPingDailySetDone
+                            account.dailySetTotal = 3
+                            account.dailySetProgress = minOf(3, if (isPingDailySetDone) 3 else (if (httpPing.dailySetProgress > 0) httpPing.dailySetProgress else checkDailySetPing.count { it.isCompleted }))
+                            val arePingMorePromosDone = areAllMorePromotionsCompletedOrExhausted(account.id, httpPing.dailyTasks, checkDailySetPing, todayStr)
+                            if (isPingDailySetDone && arePingMorePromosDone) {
                                 phase0CompletedDateMap[account.id] = todayStr
                             }
                             onAccountUpdated(account)
@@ -988,7 +987,6 @@ class RewardsStateMachine(
                     // Pre-flight HTTP fetch nếu chưa có số dư mới nhất
                     var latestBalance = latestBalanceMap[account.id]
                         ?: RewardsBalanceExtractor.latestTelemetryMap[account.id]
-                        ?: RewardsBalanceExtractor.latestTelemetryMap[account.email]
 
                     if (latestBalance == null && !account.cookiesSnapshot.isNullOrBlank()) {
                         try {
@@ -1003,12 +1001,13 @@ class RewardsStateMachine(
                                 }
                                 applyBalancePreservingExhaustedCap(account, httpBal, todayStr)
                                 val exhaustedDailyRetries = areAllDailySetOffersExhausted(account.id, extractDailySetSubset(httpBal.dailyTasks), todayStr)
-                                if (httpBal.dailySetTotal > 0) {
-                                    account.dailySetDone = httpBal.dailySetDone || exhaustedDailyRetries
-                                    account.dailySetProgress = httpBal.dailySetProgress
-                                    account.dailySetTotal = httpBal.dailySetTotal
-                                }
-                                if (httpBal.dailySetDone || exhaustedDailyRetries) {
+                                val checkDailySetBal = extractDailySetSubset(httpBal.dailyTasks)
+                                val isBalDailySetDone = httpBal.dailySetDone || exhaustedDailyRetries
+                                account.dailySetDone = isBalDailySetDone
+                                account.dailySetTotal = 3
+                                account.dailySetProgress = minOf(3, if (isBalDailySetDone) 3 else (if (httpBal.dailySetProgress > 0) httpBal.dailySetProgress else checkDailySetBal.count { it.isCompleted }))
+                                val areBalMorePromosDone = areAllMorePromotionsCompletedOrExhausted(account.id, httpBal.dailyTasks, checkDailySetBal, todayStr)
+                                if (isBalDailySetDone && areBalMorePromosDone) {
                                     phase0CompletedDateMap[account.id] = todayStr
                                 }
                                 onAccountUpdated(account)
@@ -1028,7 +1027,8 @@ class RewardsStateMachine(
                     val canAttemptClaim = claimablePoints > 0 && claimAttemptsToday < maxOf(1, maxClaimRetries)
                     val isDapiDone = isDapiPhaseDoneForAccount(account, todayStr)
                     val isBingAppDone = isBingApp60Of60Done(account, todayStr)
-                    val isActDone = ((dailySetDone && !canAttemptClaim && isDapiDone) || isBingAppDone) && !isStartupClaimPending
+                    val isPhase0Done = phase0CompletedDateMap[account.id] == todayStr
+                    val isActDone = ((isPhase0Done && !canAttemptClaim && isDapiDone) || (isBingAppDone && isPhase0Done)) && !isStartupClaimPending
 
                     val nextSearchPhase = evaluateNextSearchPhase(account)
                     val isSearchDone = nextSearchPhase == SearchPhase.DONE
@@ -1068,7 +1068,6 @@ class RewardsStateMachine(
                     }
 
                     allAccountsFinished = false
-                    anyAccountExecutedInCycle = true
                     wakeLockHelper?.acquire("Cycle_${account.id}")
                     val currentProgressLabel = if (isCatchingUp) {
                         "Tiến độ cày bù: ${account.completedSearchesToday}/$maxCatchUpSearches lượt"
@@ -1124,6 +1123,7 @@ class RewardsStateMachine(
                                 else "Quét quà thưởng định kỳ lúc Start Node...",
                                 account.email
                             )
+                            anyAccountExecutedInCycle = true
                             executeTwoStepPointClaim(targetWebView, account)
                         } catch (e: Exception) {
                             if (e is kotlinx.coroutines.CancellationException) throw e
@@ -1133,12 +1133,34 @@ class RewardsStateMachine(
 
                     // 0. PHASE 0: PRE-SEARCH ACTIVITIES (Ready to Claim, Daily Set, Streak Protection)
                     val isBingAppDoneAt0 = isBingApp60Of60Done(account, todayStr)
+                    val checkBalAt0 = latestBalanceMap[account.id] ?: latestBalance
+                    val checkTasksAt0 = checkBalAt0?.dailyTasks ?: emptyList()
+                    val checkDailySetAt0 = extractDailySetSubset(checkTasksAt0)
+                    val hasPendingDailySetAt0 = if (checkTasksAt0.isNotEmpty()) {
+                        checkDailySetAt0.any { task ->
+                            !task.isCompleted && getOfferTriedCount(account.id, task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } }, todayStr) < 2
+                        }
+                    } else {
+                        !account.dailySetDone
+                    }
+                    val hasPendingSafeMorePromosAt0 = if (checkTasksAt0.isNotEmpty()) {
+                        checkTasksAt0.any { task ->
+                            !checkDailySetAt0.any { it.id == task.id } &&
+                            RewardsActivitiesEngine.isSafePromotion(task.title, task.destinationUrl, task.pointValue, task.description) &&
+                            !task.isCompleted &&
+                            getOfferTriedCount(account.id, task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } }, todayStr) < 2
+                        }
+                    } else {
+                        phase0CompletedDateMap[account.id] != todayStr
+                    }
+                    val hasPendingPhase0TasksAt0 = hasPendingDailySetAt0 || hasPendingSafeMorePromosAt0
+                    val canSkipPhase0 = !hasPendingPhase0TasksAt0 && !canAttemptClaim && (isBingAppDoneAt0 || isActDone)
                     val isPhase0Needed = (phase0CompletedDateMap[account.id] != todayStr) || canAttemptClaim
-                    if (isBingAppDoneAt0 || isActDone) {
+                    if (canSkipPhase0) {
                         vlogManager?.logPoints(
                             "[SKIP-ACT] Bỏ qua Phase 0 (Pre-Search Activities)",
-                            if (isBingAppDoneAt0) "Tài khoản ${account.email} đã hoàn thành trọn vẹn Bing App 60/60 điểm hôm nay (Daily Set & MSN Read to Earn)"
-                            else "Tài khoản ${account.email} đã xong Daily Set và claimablePoints == 0",
+                            if (isBingAppDoneAt0) "Tài khoản ${account.email} đã hoàn thành trọn vẹn Bing App 60/60 điểm và các ưu đãi hôm nay"
+                            else "Tài khoản ${account.email} đã xong Daily Set, các ưu đãi và claimablePoints == 0",
                             account.email
                         )
                         phase0CompletedDateMap[account.id] = todayStr
@@ -1207,6 +1229,7 @@ class RewardsStateMachine(
                                         "Mở hộp thoại ?modal=pointsclaim và thực hiện nhận điểm 2 nhịp...",
                                         account.email
                                     )
+                                    anyAccountExecutedInCycle = true
                                     executeTwoStepPointClaim(targetWebView, account)
                                 } else {
                                     val curUrl = withContext(AndroidMainDispatcher) { targetWebView.url } ?: ""
@@ -1215,6 +1238,7 @@ class RewardsStateMachine(
                                         safeDelay(1500L)
                                     }
                                     RewardsActivitiesEngine.enableStreakProtection(targetWebView)
+                                    anyAccountExecutedInCycle = true
                                     val claimed = RewardsActivitiesEngine.executeReadyToClaim(targetWebView)
                                     if (claimed) {
                                         vlogManager?.logPoints("[READY-TO-CLAIM] Đã nhận điểm thưởng Ready to claim thành công", "", account.email)
@@ -1257,6 +1281,7 @@ class RewardsStateMachine(
 
                                     for ((index, task) in sortedTasks.withIndex()) {
                                         if (!isRunning || !isActive) break
+                                        anyAccountExecutedInCycle = true
 
                                         val offerKey = task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } }
                                         val tryNum = incrementOfferTriedCount(account.id, offerKey, todayStr)
@@ -1308,12 +1333,14 @@ class RewardsStateMachine(
                                                 // A. Ưu tiên thử qua API chính thống trước nếu có authKey
                                                 val apiEarned = if (task.authKey.isNotBlank()) {
                                                     try {
-                                                        RewardsActivitiesEngine.reportActivityViaBingApi(
-                                                            task,
-                                                            account.cookiesSnapshot ?: "",
-                                                            account.customUserAgent ?: "",
-                                                            resolveProxyForAccount(account)
-                                                        )
+                                                        withContext(Dispatchers.IO) {
+                                                            RewardsActivitiesEngine.reportActivityViaBingApi(
+                                                                task,
+                                                                account.cookiesSnapshot ?: "",
+                                                                account.customUserAgent ?: "",
+                                                                resolveProxyForAccount(account)
+                                                            )
+                                                        }
                                                     } catch (e: Exception) {
                                                         if (e is kotlinx.coroutines.CancellationException) throw e
                                                         0
@@ -1419,41 +1446,46 @@ class RewardsStateMachine(
                                     }
                                 } else if (dailySetTasks.isNotEmpty() && uncompletedDailyTasks.isEmpty()) {
                                     allDailyTasksDone = true
-                                    phase0CompletedDateMap[account.id] = todayStr
                                     vlogManager?.logPoints("Tất cả Daily Set Tasks đã hoàn thành (${dailySetTasks.size}/${dailySetTasks.size})", "Không có nhiệm vụ Daily Set nào còn tồn đọng.", account.email)
                                 } else if (dailySetTasks.isNotEmpty()) {
                                     allDailyTasksDone = true
-                                    phase0CompletedDateMap[account.id] = todayStr
                                     vlogManager?.logPoints("Bỏ qua Daily Set Tasks còn lại", "Tất cả nhiệm vụ chưa xong đã đạt giới hạn thử tối đa (2/2) hôm nay.", account.email)
                                 } else {
                                     val curUrl = withContext(AndroidMainDispatcher) { targetWebView.url }
                                     vlogManager?.logError("Không trích xuất được Daily Tasks từ Dashboard (trang chưa nạp xong hoặc chưa login)", "URL: $curUrl", account.email)
                                 }
 
-                                // 6. Keep Earning: Sau Daily Set trong Phase 0, duyệt morePromotions (dailyTasks) chưa xong và isSafePromotion, chạy executeSingleTaskHttp với 1000-1500ms delay.
-                                val morePromoTasks = dailyTasks.filterNot { dailySetTasks.contains(it) }
-                                    .filter { task ->
-                                        !task.isCompleted &&
-                                        RewardsActivitiesEngine.isSafePromotion(task.title, task.destinationUrl, task.pointValue) &&
-                                        (task.destinationUrl.isNotBlank() || (task.authKey.isNotBlank() && task.userId.isNotBlank())) &&
-                                        getOfferTriedCount(
-                                            account.id,
-                                            task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } },
-                                            todayStr
-                                        ) < 2
-                                    }
+                                // 6. Keep Earning: Sau Daily Set trong Phase 0, duyệt morePromotions (dailyTasks) chưa xong và isSafePromotion, chạy executeSingleTaskHttp với delay 2500-3500ms
+                                val morePromoTasks = dailyTasks.filter { task ->
+                                    !dailySetTasks.any { it.id == task.id } &&
+                                    RewardsActivitiesEngine.isSafePromotion(task.title, task.destinationUrl, task.pointValue, task.description)
+                                }
+                                val pendingPromoTasks = morePromoTasks.filter { task ->
+                                    !task.isCompleted &&
+                                    getOfferTriedCount(
+                                        account.id,
+                                        task.offerId.ifBlank { task.id.ifBlank { task.destinationUrl.hashCode().toString() } },
+                                        todayStr
+                                    ) < 2
+                                }
 
-                                if (morePromoTasks.isNotEmpty()) {
+                                if (pendingPromoTasks.isNotEmpty()) {
                                     vlogManager?.logPoints(
-                                        "[KEEP-EARNING] Phát hiện ${morePromoTasks.size} ưu đãi bổ sung (More Promotions) chưa hoàn thành",
-                                        morePromoTasks.joinToString("; ") { "${it.title} (+${it.pointValue}đ)" },
+                                        "[KEEP-EARNING] Phát hiện ${pendingPromoTasks.size}/${morePromoTasks.size} ưu đãi bổ sung (More Promotions) chưa hoàn thành",
+                                        pendingPromoTasks.joinToString("; ") { "${it.title} (+${it.pointValue}đ)" },
                                         account.email
                                     )
-                                    for ((pIdx, pTask) in morePromoTasks.withIndex()) {
+                                    for ((pIdx, pTask) in pendingPromoTasks.withIndex()) {
                                         if (!isRunning || !isActive) break
+                                        anyAccountExecutedInCycle = true
                                         val promoOfferKey = pTask.offerId.ifBlank { pTask.id.ifBlank { pTask.destinationUrl.hashCode().toString() } }
-                                        incrementOfferTriedCount(account.id, promoOfferKey, todayStr)
+                                        val tryNum = incrementOfferTriedCount(account.id, promoOfferKey, todayStr)
                                         onStatusUpdate("Tài khoản: ${account.email}", "[Phase 0] Keep Earning: ${pTask.title} (+${pTask.pointValue}đ)")
+                                        vlogManager?.logPoints(
+                                            "[KEEP-EARNING] Bắt đầu thực hiện (${pIdx + 1}/${pendingPromoTasks.size}, thử $tryNum/2): ${pTask.title} (+${pTask.pointValue}đ)",
+                                            "OfferId: ${pTask.offerId} | Destination: ${pTask.destinationUrl}",
+                                            account.email
+                                        )
                                         val fastOk = try {
                                             RewardsActivitiesEngine.executeSingleTaskHttp(
                                                 pTask,
@@ -1467,14 +1499,26 @@ class RewardsStateMachine(
                                         }
                                         if (fastOk) {
                                             vlogManager?.logPoints(
-                                                "[KEEP-EARNING] Hoàn thành qua HTTP ReportActivity/Redirect (${pIdx + 1}/${morePromoTasks.size}): ${pTask.title} (+${pTask.pointValue}đ)",
+                                                "[KEEP-EARNING] Hoàn thành qua HTTP ReportActivity/Redirect (${pIdx + 1}/${pendingPromoTasks.size}): ${pTask.title} (+${pTask.pointValue}đ)",
                                                 "OfferId: ${pTask.offerId} | Destination: ${pTask.destinationUrl}",
                                                 account.email
                                             )
+                                        } else {
+                                            vlogManager?.logPoints(
+                                                "[KEEP-EARNING] Đã gửi trigger cho ưu đãi (${pIdx + 1}/${pendingPromoTasks.size}): ${pTask.title}",
+                                                "OfferId: ${pTask.offerId} | Chờ server Bing cập nhật điểm",
+                                                account.email
+                                            )
                                         }
-                                        val promoDelay = Random.nextLong(1000L, 1501L)
+                                        val promoDelay = Random.nextLong(2500L, 3501L)
                                         safeDelay(promoDelay)
                                     }
+                                } else if (morePromoTasks.isNotEmpty()) {
+                                    vlogManager?.logPoints(
+                                        "[KEEP-EARNING] Tất cả ${morePromoTasks.size} ưu đãi bổ sung (More Promotions) đã hoàn thành hoặc đạt giới hạn thử (2/2)",
+                                        "",
+                                        account.email
+                                    )
                                 }
                             } catch (e: Exception) {
                                 if (e is kotlinx.coroutines.CancellationException) throw e
@@ -1494,18 +1538,30 @@ class RewardsStateMachine(
                                 }
                                 applyBalancePreservingExhaustedCap(account, postPhase0Bal, todayStr)
 
-                                val postDailySetOffers = extractDailySetSubset(postPhase0Bal.dailyTasks).ifEmpty { dailySetTasks }
+                                val postDailyTasks = postPhase0Bal.dailyTasks.ifEmpty { dailyTasks }
+                                val postDailySetOffers = extractDailySetSubset(postDailyTasks).ifEmpty { dailySetTasks }
                                 val allOffersExhausted = areAllDailySetOffersExhausted(account.id, postDailySetOffers, todayStr)
-                                val isDone = postPhase0Bal.dailySetDone || allOffersExhausted
-                                if (isDone) {
+                                val rawDailySetDoneCount = if (postPhase0Bal.dailySetDone) 3 else postDailySetOffers.count { it.isCompleted }
+                                val isDailySetDone = postPhase0Bal.dailySetDone || (postDailySetOffers.isNotEmpty() && postDailySetOffers.all { it.isCompleted }) || rawDailySetDoneCount >= 3 || allOffersExhausted
+                                val dailySetDoneCount = if (isDailySetDone) 3 else rawDailySetDoneCount
+
+                                // Streak tracking preservation
+                                account.dailySetDone = isDailySetDone
+                                account.dailySetTotal = 3
+                                account.dailySetProgress = minOf(3, dailySetDoneCount)
+
+                                val areMorePromosDoneOrExhausted = areAllMorePromotionsCompletedOrExhausted(
+                                    account.id,
+                                    postDailyTasks,
+                                    postDailySetOffers,
+                                    todayStr
+                                )
+                                val isPhase0FullyDone = isDailySetDone && areMorePromosDoneOrExhausted
+                                if (isPhase0FullyDone) {
                                     phase0CompletedDateMap[account.id] = todayStr
                                 } else {
                                     phase0CompletedDateMap.remove(account.id)
                                 }
-                                val effTotal = if (postPhase0Bal.dailySetTotal > 0) postPhase0Bal.dailySetTotal else (if (detectedDailyTaskCount > 0) detectedDailyTaskCount else (if (account.dailySetTotal > 0) account.dailySetTotal else 3))
-                                account.dailySetDone = isDone
-                                account.dailySetTotal = effTotal
-                                account.dailySetProgress = if (postPhase0Bal.dailySetDone) effTotal else postPhase0Bal.dailySetProgress
                                 account.claimablePoints = postPhase0Bal.claimablePoints
                                 account.cookieExpired = false
 
@@ -1517,13 +1573,32 @@ class RewardsStateMachine(
                                 onAccountUpdated(account)
 
                                 vlogManager?.logPoints(
-                                    "Hoàn thành Phase 0 (Pre-Search Activities) | Số dư: ${account.availablePoints} pts",
+                                    "Hoàn thành Phase 0 (Pre-Search Activities) | Số dư: ${account.availablePoints} pts | Daily Set: ${account.dailySetProgress}/3 | More Promos Xong: $areMorePromosDoneOrExhausted",
                                     "Chuỗi ngày: ${account.streakCount} | Đã kiếm hôm nay: +${account.pointsEarnedToday} pts (PC: ${account.pcProgress}/${account.pcMax}, Mobile: ${account.mobileProgress}/${account.mobileMax}, Edge: ${account.edgeProgress}/${account.edgeMax})",
                                     account.email
                                 )
-                            } else if (areAllDailySetOffersExhausted(account.id, dailySetTasks, todayStr)) {
-                                phase0CompletedDateMap[account.id] = todayStr
-                                account.dailySetDone = true
+                            } else {
+                                val allOffersExhausted = areAllDailySetOffersExhausted(account.id, dailySetTasks, todayStr)
+                                val rawDailySetDoneCount = dailySetTasks.count { it.isCompleted }
+                                val isDailySetDone = account.dailySetDone || rawDailySetDoneCount >= 3 || allOffersExhausted
+                                val dailySetDoneCount = if (isDailySetDone) 3 else rawDailySetDoneCount
+
+                                account.dailySetDone = isDailySetDone
+                                account.dailySetTotal = 3
+                                account.dailySetProgress = minOf(3, dailySetDoneCount)
+
+                                val areMorePromosDoneOrExhausted = areAllMorePromotionsCompletedOrExhausted(
+                                    account.id,
+                                    dailyTasks,
+                                    dailySetTasks,
+                                    todayStr
+                                )
+                                val isPhase0FullyDone = isDailySetDone && areMorePromosDoneOrExhausted
+                                if (isPhase0FullyDone) {
+                                    phase0CompletedDateMap[account.id] = todayStr
+                                } else {
+                                    phase0CompletedDateMap.remove(account.id)
+                                }
                                 onAccountUpdated(account)
                             }
                         } catch (e: Exception) {
@@ -1629,6 +1704,7 @@ class RewardsStateMachine(
 
                                 // 1. Check in to the Bing App (type 103 Bing App Streak + type 101 Sapphire Check-In)
                                 if (!isCheckInCompletedToday(account.id, todayStr)) {
+                                    anyAccountExecutedInCycle = true
                                     var checkInRes = DapiActivitiesEngine.executeDailyCheckIn(dapiToken, resolveProxyForAccount(account))
                                     if (!checkInRes.isSuccess && (checkInRes.isUnauthorized || checkInRes.message.contains("401"))) {
                                         account.dapiAccessToken = null
@@ -1671,6 +1747,7 @@ class RewardsStateMachine(
 
                                 // 2. MSN Read to Earn (Tối đa 30đ/ngày nếu readProgress < 30)
                                 if (account.readProgress < 30 && !dapiToken.isNullOrBlank()) {
+                                    anyAccountExecutedInCycle = true
                                     onStatusUpdate("Tài khoản: ${account.email}", "[Phase 0.5] Đang đọc báo MSN (${account.readProgress}/30đ)...")
                                     var readRes = DapiActivitiesEngine.executeReadToEarn(
                                         token = dapiToken,
@@ -1763,8 +1840,10 @@ class RewardsStateMachine(
 
                     var successfulSearchesInBatch = 0
                     val effMobQuota = if (account.mobileMax > 0) account.mobileMax else 60
-                    val isMobilePendingL2 = account.level >= 2 && account.mobileProgress < effMobQuota && phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_2_MOBILE) != true
-                    if (activePhase == SearchPhase.DONE || (account.completedSearchesToday >= maxCatchUpSearches && !isMobilePendingL2)) {
+                    val effPcQuota = if (account.pcMax > 0) account.pcMax else (if (account.level < 2) 30 else 90)
+                    val isMobilePendingL2 = account.level >= 2 && account.mobileProgress < effMobQuota
+                    val isBasketPending = (account.pcProgress < effPcQuota) || isMobilePendingL2
+                    if (activePhase == SearchPhase.DONE || (account.completedSearchesToday >= maxCatchUpSearches && !isBasketPending)) {
                         if (activePhase == SearchPhase.DONE && account.completedSearchesToday < account.targetSearches) {
                             account.completedSearchesToday = account.targetSearches
                             onAccountUpdated(account)
@@ -1831,6 +1910,7 @@ class RewardsStateMachine(
                                 )
 
                                 val success = onExecuteSearch(account, keyword, activePhase)
+                                anyAccountExecutedInCycle = true
                                 if (success) {
                                     successfulSearchesInBatch++
                                     account.completedSearchesToday++
@@ -1902,15 +1982,7 @@ class RewardsStateMachine(
                             onStatusUpdate("Tài khoản: ${account.email}", "Đang đợi 10s đồng bộ điểm rổ...")
                             safeDelay(10000L)
 
-                            var postBalance = if (currentWebView != null) {
-                                var bal = RewardsBalanceExtractor.extractPoints(currentWebView)
-                                if (!bal.isSuccess || bal.availablePoints <= 0 || bal.pcMax == 0) {
-                                    bal = extractPointsForAccount(account)
-                                }
-                                bal
-                            } else {
-                                extractPointsForAccount(account)
-                            }
+                            var postBalance = extractPointsForAccount(account)
 
                             var deltaPC = maxOf(0, postBalance.pcProgress - prePc)
                             var deltaMobile = maxOf(0, postBalance.mobileProgress - preMobile)
@@ -1928,15 +2000,7 @@ class RewardsStateMachine(
                                 onStatusUpdate("Tài khoản: ${account.email}", "Đang đợi 10s re-poll điểm lần 2...")
                                 safeDelay(10000L)
 
-                                val retryBalance = if (currentWebView != null) {
-                                    var bal = RewardsBalanceExtractor.extractPoints(currentWebView)
-                                    if (!bal.isSuccess || bal.availablePoints <= 0) {
-                                        bal = extractPointsForAccount(account)
-                                    }
-                                    bal
-                                } else {
-                                    extractPointsForAccount(account)
-                                }
+                                val retryBalance = extractPointsForAccount(account)
 
                                 if (retryBalance.isSuccess && retryBalance.availablePoints > 0) {
                                     postBalance = retryBalance
@@ -1947,6 +2011,35 @@ class RewardsStateMachine(
                                     deltaBonus = maxOf(0, deltaTotal - (deltaPC + deltaMobile + deltaEdge))
                                 }
                             }
+
+                            // Phase-Aware Delta Attribution: Nếu deltaTotal > sum(delta rổ) và successfulSearchesInBatch > 0,
+                            // backend Microsoft có thể cập nhật trễ rổ điểm. Phân bổ vào rổ của activePhase trước khi gán phần dư cho deltaBonus.
+                            val sumBaskets = deltaPC + deltaMobile + deltaEdge
+                            if (deltaTotal > sumBaskets && successfulSearchesInBatch > 0) {
+                                val unallocated = deltaTotal - sumBaskets
+                                when (activePhase) {
+                                    SearchPhase.PHASE_1_PC -> {
+                                        val effPcMax = if (account.pcMax > 0) account.pcMax else (if (account.level < 2) 30 else 90)
+                                        val room = maxOf(0, effPcMax - prePc - deltaPC)
+                                        val alloc = minOf(unallocated, room)
+                                        deltaPC += alloc
+                                    }
+                                    SearchPhase.PHASE_2_MOBILE -> {
+                                        val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level < 2) 0 else 60)
+                                        val room = maxOf(0, effMobMax - preMobile - deltaMobile)
+                                        val alloc = minOf(unallocated, room)
+                                        deltaMobile += alloc
+                                    }
+                                    SearchPhase.PHASE_3_EDGE -> {
+                                        val effEdgeMax = if (account.edgeMax > 0) account.edgeMax else 0
+                                        val room = if (effEdgeMax > 0) maxOf(0, effEdgeMax - preEdge - deltaEdge) else unallocated
+                                        val alloc = minOf(unallocated, room)
+                                        deltaEdge += alloc
+                                    }
+                                    else -> {}
+                                }
+                            }
+                            deltaBonus = maxOf(0, deltaTotal - (deltaPC + deltaMobile + deltaEdge))
 
                             deltaPoints = deltaTotal
 
@@ -1961,10 +2054,21 @@ class RewardsStateMachine(
                                 applyBalancePreservingExhaustedCap(account, postBalance, todayStr, fallbackBase)
                                 baselineDateMap[account.id] = todayStr
 
+                                if (deltaPC > 0) account.pcProgress = maxOf(account.pcProgress, prePc + deltaPC)
+                                if (deltaMobile > 0) account.mobileProgress = maxOf(account.mobileProgress, preMobile + deltaMobile)
+                                if (deltaEdge > 0) account.edgeProgress = maxOf(account.edgeProgress, preEdge + deltaEdge)
+
+                                postBalance = postBalance.copy(
+                                    pcProgress = account.pcProgress,
+                                    mobileProgress = account.mobileProgress,
+                                    edgeProgress = account.edgeProgress
+                                )
+                                latestBalanceMap[account.id] = postBalance
+
                                 onAccountUpdated(account)
 
                                 // Ghi Vlog chi tiết từng rổ
-                                val basketBreakdownLog = "[POINT] +${deltaTotal}đ (PC:+${deltaPC}, Mob:+${deltaMobile}, Edge:+${deltaEdge}, Bonus:+${deltaBonus}) | Kho: ${postBalance.pcProgress}/${account.pcMax} PC, ${postBalance.mobileProgress}/${account.mobileMax} Mob, ${postBalance.edgeProgress}/${account.edgeMax} Edge"
+                                val basketBreakdownLog = "+${deltaTotal}đ (PC:+${deltaPC}, Mob:+${deltaMobile}, Edge:+${deltaEdge}, Bonus:+${deltaBonus}) | Kho: ${account.pcProgress}/${account.pcMax} PC, ${account.mobileProgress}/${account.mobileMax} Mob, ${account.edgeProgress}/${account.edgeMax} Edge"
                                 vlogManager?.logPoints(
                                     basketBreakdownLog,
                                     "Số dư: ${account.availablePoints} pts (+${account.pointsEarnedToday} hôm nay)",
@@ -1974,13 +2078,13 @@ class RewardsStateMachine(
                                 // Cập nhật Live Notification Tray hiển thị breakdown
                                 onStatusUpdate(
                                     "Tài khoản: ${account.email} | +${deltaTotal}đ (PC:+${deltaPC}, Mob:+${deltaMobile}, Edge:+${deltaEdge}, Bonus:+${deltaBonus})",
-                                    "Kho: ${postBalance.pcProgress}/${account.pcMax} PC, ${postBalance.mobileProgress}/${account.mobileMax} Mob, ${postBalance.edgeProgress}/${account.edgeMax} Edge"
+                                    "Kho: ${account.pcProgress}/${account.pcMax} PC, ${account.mobileProgress}/${account.mobileMax} Mob, ${account.edgeProgress}/${account.edgeMax} Edge"
                                 )
 
                                 if (postBalance.isAllMaxedOut) {
                                     vlogManager?.logPoints(
                                         "Tất cả rổ điểm đã max (All Maxed Out)!",
-                                        "PC: ${postBalance.pcProgress}/${account.pcMax}, Mobile: ${postBalance.mobileProgress}/${account.mobileMax}, Edge: ${postBalance.edgeProgress}/${account.edgeMax}",
+                                        "PC: ${account.pcProgress}/${account.pcMax}, Mobile: ${account.mobileProgress}/${account.mobileMax}, Edge: ${account.edgeProgress}/${account.edgeMax}",
                                         account.email
                                     )
                                 }
@@ -1988,126 +2092,114 @@ class RewardsStateMachine(
 
                             // Đánh giá cờ Cooldown và Phase Trial Exhaustion
                             if (deltaTotal == 0) {
-                                val zeroCount = (zeroDeltaBatchCountMap[account.id] ?: 0) + 1
-                                zeroDeltaBatchCountMap[account.id] = zeroCount
-
-                                val phaseCount = phaseZeroDeltaCountMap.getOrPut(account.id) { ConcurrentHashMap() }
-                                val zCount = (phaseCount[activePhase] ?: 0) + 1
-                                phaseCount[activePhase] = zCount
-
-                                var isTransitioningToMobile = false
-
-                                // Nếu cày thử nghiệm một phase mà không tăng điểm:
-                                if (activePhase == SearchPhase.PHASE_2_MOBILE && zCount >= 2) {
-                                    if (account.mobileProgress > 0) {
-                                        phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_2_MOBILE)
-                                        vlogManager?.logPoints(
-                                            "[TRIAL-MOB] Đã hoàn tất thử nghiệm Mobile Search cho ${account.email}",
-                                            "Microsoft không cộng thêm điểm rổ Mobile (ΔMobile=0). Chuyển sang Phase 3 (Edge).",
-                                            account.email
-                                        )
-                                    } else {
-                                        // Rổ Mobile vẫn 0/60 -> Do dính Cooldown từ PC. KHÔNG latch exhausted, đưa vào Cooldown 15m để cày lại sau.
-                                        cooldownRestrictedAccounts.add(account.id)
-                                        vlogManager?.logCooldown(
-                                            "[COOL-MOB] Tạm hoãn Mobile Search cho ${account.email} (0/60 điểm)",
-                                            "Microsoft tạm dừng tính điểm do Cooldown 15 phút từ PC. Bảo toàn rổ điểm, nghỉ 15 phút trước khi thử lại.",
-                                            account.email
-                                        )
-                                    }
-                                } else if (activePhase == SearchPhase.PHASE_3_EDGE && zCount >= 2) {
-                                    phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_3_EDGE)
-                                    vlogManager?.logPoints(
-                                        "[TRIAL-EDGE] Đã hoàn tất thử nghiệm Edge Search cho ${account.email}",
-                                        "Microsoft không cộng thêm điểm rổ Edge (ΔEdge=0). Hoàn tất tìm kiếm.",
-                                        account.email
-                                    )
-                                } else if (activePhase == SearchPhase.PHASE_1_PC && zCount >= 2) {
-                                    phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_1_PC)
-                                    if (account.pcMax > 0 && account.pcProgress >= account.pcMax - 3) {
-                                        encryptedPrefs?.markSearchExhaustedToday(account.id, todayStr)
-                                        account.pcProgress = account.pcMax
-                                        onAccountUpdated(account)
-                                    }
-
-                                    val isL2OrMob = (account.level >= 2 || account.mobileMax > 0)
-                                    val effMobQuota = if (account.mobileMax > 0) account.mobileMax else 60
-                                    if (isL2OrMob && account.mobileProgress < effMobQuota && phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_2_MOBILE) != true) {
-                                        isTransitioningToMobile = true
-                                        zeroDeltaBatchCountMap[account.id] = 0
-                                        cooldownRestrictedAccounts.remove(account.id)
-                                    }
-                                    vlogManager?.logPoints(
-                                        "[TRIAL-PC] Đã hoàn tất thử nghiệm PC Search cho ${account.email}",
-                                        "Microsoft không cộng thêm điểm rổ PC (ΔPC=0). Chuyển sang Phase 2 (Mobile).",
-                                        account.email
-                                    )
+                                val effPcMax = if (account.pcMax > 0) account.pcMax else (if (account.level < 2) 30 else 90)
+                                val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level < 2) 0 else 60)
+                                val isCurrentPhaseMaxed = when (activePhase) {
+                                    SearchPhase.PHASE_1_PC -> account.pcProgress >= effPcMax
+                                    SearchPhase.PHASE_2_MOBILE -> account.mobileProgress >= effMobMax
+                                    SearchPhase.PHASE_3_EDGE -> account.edgeMax > 0 && account.edgeProgress >= account.edgeMax
+                                    else -> false
                                 }
 
-                                val effFrozenStop = maxOf(2, frozenStopBatches)
-                                val effCooldownTrigger = maxOf(1, cooldownTriggerBatches)
-                                if (isTransitioningToMobile) {
-                                    vlogManager?.logCooldown(
-                                        "[TRANSITION-MOB] Bỏ qua Cooldown/Frozen Balance đợt PC cho ${account.email}",
-                                        "Tài khoản Level 2 chuyển sang thử nghiệm Mobile Search trước khi kết luận.",
+                                if (isCurrentPhaseMaxed) {
+                                    vlogManager?.logPoints(
+                                        "[PHASE-COMPLETED] Pha ${activePhase.label} cho ${account.email} đã đạt tối đa rổ",
+                                        "PC: ${account.pcProgress}/$effPcMax, Mob: ${account.mobileProgress}/$effMobMax. Chuyển sang pha tiếp theo mà không phạt Cooldown.",
                                         account.email
                                     )
-                                } else if (isAccountCooldownRestricted(account.id)) {
-                                    // Tài khoản đang trong chu kỳ Cooldown 15 phút của Microsoft -> Không khóa nick (isEnabled = false)!
-                                    vlogManager?.logCooldown(
-                                        "[COOL-HOLD] Tài khoản ${account.email} đang trong thời gian Cooldown 15 phút ($zeroCount batch ΔTotal == 0)",
-                                        "Tiếp tục bảo toàn tài khoản, duy trì Cooldown sàn toán học 920s và luân chuyển Round-Robin.",
-                                        account.email
-                                    )
-                                } else if (isAuthDesync(account.id)) {
-                                    // Tài khoản bị mất đồng bộ Bing Search Auth -> Không khóa nick (isEnabled = false)!
-                                    vlogManager?.logNetwork(
-                                        "[AUTH-DESYNC] Phát hiện mất đồng bộ Bing Search Auth cho ${account.email} ($zeroCount batch ΔTotal == 0)",
-                                        "Bảo toàn tài khoản (không khóa nick), tạm hoãn để tự động re-auth ở chu kỳ kế tiếp.",
-                                        account.email
-                                    )
-                                    cooldownRestrictedAccounts.add(account.id)
-                                } else if (account.pointsEarnedToday > 0 && zeroCount >= effFrozenStop) {
-                                    // Tài khoản hôm nay đã kiếm được điểm hợp lệ (ví dụ Phase 0 hoặc PC search) -> Không khóa nick!
-                                    cooldownRestrictedAccounts.add(account.id)
-                                    vlogManager?.logCooldown(
-                                        "[SAFE-COOLDOWN] Tài khoản ${account.email} hôm nay đã kiếm được ${account.pointsEarnedToday} điểm",
-                                        "Phát hiện số dư tạm dừng tăng ($zeroCount batch ΔTotal == 0). Áp dụng Cooldown 15 phút thay vì khóa nick.",
-                                        account.email
-                                    )
-                                } else if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
-                                    // Thay vì khóa nick oan khi dính Cooldown của Microsoft, chuyển sang Safe Cooldown 15 phút để bảo vệ tài khoản
-                                    cooldownRestrictedAccounts.add(account.id)
-                                    vlogManager?.logCooldown(
-                                        "[SAFE-COOLDOWN] Tài khoản ${account.email} tạm dừng tăng điểm ($zeroCount batch ΔTotal == 0 dù $successfulSearchesInBatch lượt tìm kiếm thành công)",
-                                        "Kích hoạt Cooldown 15 phút an toàn thay vì khóa nick. Bảo toàn tài khoản và xoay vòng Round-Robin.",
-                                        account.email
-                                    )
-                                    onStatusUpdate(
-                                        "Tài khoản ${account.email} tạm nghỉ Cooldown",
-                                        "Phát hiện số dư tạm dừng tăng ($zeroCount batch ΔTotal = 0). Tự động nghỉ 15 phút."
-                                    )
-                                    continue
-                                } else if (zeroCount >= effCooldownTrigger) {
-                                    // effCooldownTrigger batch liên tiếp ΔTotal == 0 => Cắm cờ Cooldown restricted 15 phút
-                                    cooldownRestrictedAccounts.add(account.id)
-                                    vlogManager?.logCooldown(
-                                        "[COOL] Phát hiện Cooldown Restricted: $zeroCount batch liên tiếp ΔTotal == 0 sau batch ($successfulSearchesInBatch lượt)",
-                                        "Tài khoản ${account.email} đang bị Microsoft áp cờ kiểm soát 15 phút. Kích hoạt sàn toán học 920s.",
-                                        account.email
-                                    )
+                                    zeroDeltaBatchCountMap[account.id] = 0
                                 } else {
-                                    // Mới 1 batch ΔTotal == 0 => Chỉ cảnh báo vlog, chưa cắm cờ Cooldown
-                                    vlogManager?.logCooldown(
-                                        "[WARN] Cảnh báo ΔTotal == 0 sau batch ($successfulSearchesInBatch lượt) [Lần $zeroCount/$effCooldownTrigger]",
-                                        "Tài khoản ${account.email} chưa ghi nhận tăng điểm ở batch này. Tiếp tục theo dõi batch kế tiếp.",
-                                        account.email
-                                    )
+                                    val zeroCount = (zeroDeltaBatchCountMap[account.id] ?: 0) + 1
+                                    zeroDeltaBatchCountMap[account.id] = zeroCount
+
+                                    val isPhaseBasketPending = when (activePhase) {
+                                        SearchPhase.PHASE_1_PC -> account.pcProgress < effPcMax
+                                        SearchPhase.PHASE_2_MOBILE -> account.level >= 2 && account.mobileProgress < effMobMax
+                                        SearchPhase.PHASE_3_EDGE -> account.edgeMax > 0 && account.edgeProgress < account.edgeMax
+                                        else -> false
+                                    }
+
+                                    val effCooldownTrigger = maxOf(2, cooldownTriggerBatches)
+
+                                    if (isPhaseBasketPending && zeroCount >= effCooldownTrigger) {
+                                        // Rổ của phase hiện tại chưa đạt max mà ΔTotal == 0 >= effCooldownTrigger: ĐÂY LÀ COOLDOWN 15 PHÚT CỦA MICROSOFT!
+                                        // Tuyệt đối KHÔNG add phaseExhaustedMap! Tuyệt đối KHÔNG xóa cooldownRestrictedAccounts hay ép nhảy phase!
+                                        cooldownRestrictedAccounts.add(account.id)
+                                        val now = System.currentTimeMillis()
+                                        val cooldownSecs = 920 + Random.nextInt(0, 30)
+                                        val cooldownUntilMs = now + cooldownSecs * 1000L
+                                        account.cooldownUntilTimestamp = cooldownUntilMs
+                                        onAccountUpdated(account)
+                                        earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, cooldownUntilMs)
+
+                                        val cooldownUntil = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
+                                            Date(cooldownUntilMs)
+                                        )
+                                        vlogManager?.logCooldown(
+                                            "[COOLDOWN-15M] Tài khoản ${account.email} gặp ΔTotal == 0 ($zeroCount/$effCooldownTrigger) khi pha ${activePhase.label} chưa đạt max (${account.pcProgress}/$effPcMax PC, ${account.mobileProgress}/$effMobMax Mob)",
+                                            "Microsoft áp đặt Cooldown 15 phút. Đặt Cooldown đến $cooldownUntil (${cooldownSecs}s), nhường slot sang account khác (Round-Robin non-blocking).",
+                                            account.email
+                                        )
+                                    } else if (isPhaseBasketPending) {
+                                        vlogManager?.logCooldown(
+                                            "[WARN] Cảnh báo ΔTotal == 0 lần $zeroCount/$effCooldownTrigger khi pha ${activePhase.label} chưa đạt max (${account.pcProgress}/$effPcMax PC, ${account.mobileProgress}/$effMobMax Mob)",
+                                            "Tài khoản ${account.email} cho phép micro-break retry trước khi kích hoạt Cooldown 15 phút.",
+                                            account.email
+                                        )
+                                    } else if (isAccountCooldownRestricted(account.id)) {
+                                        // Tài khoản đang trong chu kỳ Cooldown 15 phút của Microsoft -> Không khóa nick (isEnabled = false)!
+                                        vlogManager?.logCooldown(
+                                            "[COOL-HOLD] Tài khoản ${account.email} đang trong thời gian Cooldown 15 phút ($zeroCount batch ΔTotal == 0)",
+                                            "Tiếp tục bảo toàn tài khoản, duy trì Cooldown sàn toán học 920s và luân chuyển Round-Robin.",
+                                            account.email
+                                        )
+                                    } else if (isAuthDesync(account.id)) {
+                                        // Tài khoản bị mất đồng bộ Bing Search Auth -> Không khóa nick (isEnabled = false)!
+                                        vlogManager?.logNetwork(
+                                            "[AUTH-DESYNC] Phát hiện mất đồng bộ Bing Search Auth cho ${account.email} ($zeroCount batch ΔTotal == 0)",
+                                            "Bảo toàn tài khoản (không khóa nick), tạm hoãn để tự động re-auth ở chu kỳ kế tiếp.",
+                                            account.email
+                                        )
+                                        cooldownRestrictedAccounts.add(account.id)
+                                    } else {
+                                        val effFrozenStop = maxOf(2, frozenStopBatches)
+                                        if (account.pointsEarnedToday > 0 && zeroCount >= effFrozenStop) {
+                                            // Tài khoản hôm nay đã kiếm được điểm hợp lệ (ví dụ Phase 0 hoặc PC search) -> Không khóa nick!
+                                            cooldownRestrictedAccounts.add(account.id)
+                                            vlogManager?.logCooldown(
+                                                "[SAFE-COOLDOWN] Tài khoản ${account.email} hôm nay đã kiếm được ${account.pointsEarnedToday} điểm",
+                                                "Phát hiện số dư tạm dừng tăng ($zeroCount batch ΔTotal == 0). Áp dụng Cooldown 15 phút thay vì khóa nick.",
+                                                account.email
+                                            )
+                                        } else if (zeroCount >= effFrozenStop && successfulSearchesInBatch > 0) {
+                                            // Thay vì khóa nick oan khi dính Cooldown của Microsoft, chuyển sang Safe Cooldown 15 phút để bảo vệ tài khoản
+                                            cooldownRestrictedAccounts.add(account.id)
+                                            vlogManager?.logCooldown(
+                                                "[SAFE-COOLDOWN] Tài khoản ${account.email} tạm dừng tăng điểm ($zeroCount batch ΔTotal == 0 dù $successfulSearchesInBatch lượt tìm kiếm thành công)",
+                                                "Kích hoạt Cooldown 15 phút an toàn thay vì khóa nick. Bảo toàn tài khoản và xoay vòng Round-Robin.",
+                                                account.email
+                                            )
+                                        } else if (zeroCount >= effCooldownTrigger) {
+                                            // effCooldownTrigger batch liên tiếp ΔTotal == 0 => Cắm cờ Cooldown restricted 15 phút
+                                            cooldownRestrictedAccounts.add(account.id)
+                                            vlogManager?.logCooldown(
+                                                "[COOL] Phát hiện Cooldown Restricted: $zeroCount batch liên tiếp ΔTotal == 0 sau batch ($successfulSearchesInBatch lượt)",
+                                                "Tài khoản ${account.email} đang bị Microsoft áp cờ kiểm soát 15 phút. Kích hoạt sàn toán học 920s.",
+                                                account.email
+                                            )
+                                        } else {
+                                            // Mới 1 batch ΔTotal == 0 => Chỉ cảnh báo vlog, chưa cắm cờ Cooldown
+                                            vlogManager?.logCooldown(
+                                                "[WARN] Cảnh báo ΔTotal == 0 sau batch ($successfulSearchesInBatch lượt) [Lần $zeroCount/$effCooldownTrigger]",
+                                                "Tài khoản ${account.email} chưa ghi nhận tăng điểm ở batch này. Tiếp tục theo dõi batch kế tiếp.",
+                                                account.email
+                                            )
+                                        }
+                                    }
                                 }
                             } else {
                                 // Điểm tăng hợp lệ => Reset bộ đếm zero batch & gỡ cờ restricted nếu có
                                 zeroDeltaBatchCountMap[account.id] = 0
-                                phaseZeroDeltaCountMap.getOrPut(account.id) { ConcurrentHashMap() }[activePhase] = 0
                                 cooldownRestrictedAccounts.remove(account.id)
                             }
                         } catch (e: Exception) {
@@ -2170,7 +2262,7 @@ class RewardsStateMachine(
                         canCatchUp
                     }
 
-                    if (isStillNeedingSearches && isRunning) {
+                    if ((isStillNeedingSearches || isAccountCooldownRestricted(account.id)) && isRunning) {
                         val isRestricted = cooldownRestrictedAccounts.contains(account.id)
 
                         val cooldownSecs = if (isRestricted) {
@@ -2184,7 +2276,8 @@ class RewardsStateMachine(
                             920 + Random.nextInt(0, 30)
                         }
 
-                        val cooldownUntilMs = System.currentTimeMillis() + cooldownSecs * 1000L
+                        val now = System.currentTimeMillis()
+                        val cooldownUntilMs = maxOf(account.cooldownUntilTimestamp, now + cooldownSecs * 1000L)
                         account.cooldownUntilTimestamp = cooldownUntilMs
                         onAccountUpdated(account)
                         earliestCooldownUntilMs = minOf(earliestCooldownUntilMs, cooldownUntilMs)
@@ -2197,8 +2290,8 @@ class RewardsStateMachine(
                         val hasOtherReadyAccount = candidateAccounts.any {
                             val otherDapiDone = isDapiPhaseDoneForAccount(it, todayStr)
                             val otherSearchDone = evaluateNextSearchPhase(it) == SearchPhase.DONE
-                            val otherDailyDone = it.dailySetDone || phase0CompletedDateMap[it.id] == todayStr
                             val otherBingAppDone = isBingApp60Of60Done(it, todayStr)
+                            val otherDailyDone = it.dailySetDone || (it.dailySetProgress >= it.dailySetTotal && it.dailySetTotal > 0)
                             val otherFinished = (it.isAllMaxedOutToday(todayStr) && otherDailyDone) || (otherSearchDone && otherDailyDone && otherDapiDone) || (otherSearchDone && otherBingAppDone)
                             it.id != account.id &&
                                 it.isEnabled &&
@@ -2216,17 +2309,35 @@ class RewardsStateMachine(
                             continue
                         }
 
-                        onStatusUpdate(
-                            "Nghỉ $modeLabel (${cooldownSecs / 60}m${cooldownSecs % 60}s)",
-                            "Tài khoản ${account.email} sẽ chạy tiếp lúc $cooldownUntil (ΔPoints: ${if (deltaPoints >= 0) "+$deltaPoints" else "N/A"})"
-                        )
-                        vlogManager?.logCooldown(
-                            "Bắt đầu nghỉ $modeLabel: ${cooldownSecs}s",
-                            "Chạy tiếp lúc $cooldownUntil (ΔPoints: ${if (deltaPoints >= 0) "+$deltaPoints" else "N/A"})",
-                            account.email
+                        // Head-of-line blocking prevention: Khi không có account khác sẵn sàng ngay,
+                        // chỉ chờ delta tối thiểu đến mốc cooldown sớm nhất của các candidate chưa max hôm nay, thay vì chờ trọn 920s!
+                        val earliestCandidateCooldownMs = candidateAccounts
+                            .filter { !it.isAllMaxedOutToday(todayStr) }
+                            .map { it.cooldownUntilTimestamp }
+                            .filter { it > now }
+                            .minOrNull() ?: cooldownUntilMs
+
+                        val waitDeltaMs = maxOf(5000L, earliestCandidateCooldownMs - now)
+                        val effectiveWaitSecs = (waitDeltaMs + 999L) / 1000L
+                        val nextCandidateAcc = candidateAccounts.filter { !it.isAllMaxedOutToday(todayStr) }.minByOrNull {
+                            if (it.cooldownUntilTimestamp > now) it.cooldownUntilTimestamp else Long.MAX_VALUE
+                        } ?: account
+
+                        val nextReadyFormatted = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(
+                            Date(now + waitDeltaMs)
                         )
 
-                        if (cooldownSecs >= 900) {
+                        onStatusUpdate(
+                            "Nghỉ $modeLabel (${effectiveWaitSecs / 60}m${effectiveWaitSecs % 60}s)",
+                            "Chờ tài khoản ${nextCandidateAcc.email} sẵn sàng lúc $nextReadyFormatted (ΔPoints: ${if (deltaPoints >= 0) "+$deltaPoints" else "N/A"})"
+                        )
+                        vlogManager?.logCooldown(
+                            "Bắt đầu nghỉ $modeLabel: ${effectiveWaitSecs}s (HOL-Free)",
+                            "Chạy tiếp lúc $nextReadyFormatted với ${nextCandidateAcc.email} (ΔPoints: ${if (deltaPoints >= 0) "+$deltaPoints" else "N/A"})",
+                            nextCandidateAcc.email
+                        )
+
+                        if (effectiveWaitSecs >= 900) {
                             wakeLockHelper?.release()
                             activeSessionAccountId = null
                             profileManager?.resetActiveSession()
@@ -2237,12 +2348,12 @@ class RewardsStateMachine(
                                     targetWebView?.clearHistory()
                                 } catch (_: Exception) {}
                             }
-                            onScheduleCooldownAlarm?.invoke(cooldownSecs.toLong(), account)
-                            waitForAlarmWakeup(cooldownSecs.toLong())
+                            onScheduleCooldownAlarm?.invoke(effectiveWaitSecs, nextCandidateAcc)
+                            waitForAlarmWakeup(effectiveWaitSecs)
                         } else {
-                            safeDelay(cooldownSecs * 1000L)
+                            safeDelay(effectiveWaitSecs * 1000L)
                         }
-                    } else if (!isStillNeedingSearches && account.cooldownUntilTimestamp != 0L) {
+                    } else if (isAllBasketsDone && account.cooldownUntilTimestamp != 0L) {
                         account.cooldownUntilTimestamp = 0L
                         onAccountUpdated(account)
                     }
@@ -2369,14 +2480,8 @@ class RewardsStateMachine(
                 onAccountUpdated(account)
             }
 
-            val isPcFullInSession = sessionFullBasketsMap[account.id]?.contains(SearchPhase.PHASE_1_PC) == true
-            val pcRecheckCount = sessionRecheckCountMap.getOrPut(account.id) { ConcurrentHashMap() }[SearchPhase.PHASE_1_PC] ?: 0
-            val isPcBlockedByGuard = isPcFullInSession && pcRecheckCount >= 1
-
-            val isPcExhausted = (phaseExhaustedMap[account.id]?.contains(SearchPhase.PHASE_1_PC) == true) ||
-                (encryptedPrefs?.isSearchExhaustedToday(account.id, todayStr) == true) ||
-                isPcBlockedByGuard
-            val pcDeficit = if (account.pcMax > 0 && !isPcExhausted) maxOf(0, account.pcMax - account.pcProgress) else 0
+            val isPersistedSearchExhausted = encryptedPrefs?.isSearchExhaustedToday(account.id, todayStr) == true
+            val pcDeficit = if (account.pcMax > 0 && !isPersistedSearchExhausted) maxOf(0, account.pcMax - account.pcProgress) else 0
             val effMobMax = if (account.mobileMax > 0) account.mobileMax else (if (account.level >= 2) 60 else 0)
             val isMobAllowed = (account.level >= 2 && effMobMax > 0)
             if (!isMobAllowed) {
@@ -2417,10 +2522,9 @@ class RewardsStateMachine(
                 val neededSearches = minOf(2, (edgeDeficit + 2) / 3)
                 repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_3_EDGE) }
             }
-            if (pcDeficit > 0 && !isPcBlockedByGuard) {
+            if (pcDeficit > 0) {
                 val neededSearches = minOf(2, (pcDeficit + 2) / 3)
                 repeat(neededSearches) { deficitBaskets.add(SearchPhase.PHASE_1_PC) }
-                sessionRecheckCountMap.getOrPut(account.id) { ConcurrentHashMap() }[SearchPhase.PHASE_1_PC] = pcRecheckCount + 1
             }
 
             var passSearchesExecuted = 0
@@ -2478,7 +2582,6 @@ class RewardsStateMachine(
             // Nếu sau 1 pass cày bù mà delta == 0 -> ngắt sớm ngay lập tức!
             if (passDelta == 0) {
                 if (passSearchesExecuted > 0) {
-                    phaseExhaustedMap.getOrPut(account.id) { Collections.synchronizedSet(mutableSetOf()) }.add(SearchPhase.PHASE_1_PC)
                     if (account.pcMax > 0 && account.pcProgress >= account.pcMax - 3) {
                         encryptedPrefs?.markSearchExhaustedToday(account.id, todayStr)
                         account.pcProgress = account.pcMax
@@ -2500,6 +2603,7 @@ class RewardsStateMachine(
     fun stop() {
         isRunning = false
         activeSessionAccountId = null
+        activeWebView = null
         wakeLockHelper?.release()
         currentJob?.cancel()
         currentJob = null

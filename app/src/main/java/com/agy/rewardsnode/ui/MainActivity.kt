@@ -24,6 +24,7 @@ import android.text.TextUtils
 import android.view.WindowInsets
 import android.widget.*
 import com.agy.rewardsnode.R
+import com.agy.rewardsnode.core.DailyTask
 import com.agy.rewardsnode.core.ForensicShredder
 import com.agy.rewardsnode.core.ProfileManager
 import com.agy.rewardsnode.core.RewardsBalanceExtractor
@@ -197,6 +198,87 @@ class MainActivity : Activity() {
     companion object {
         private const val REQ_CREATE_BACKUP_DOC = 2001
         private const val REQ_OPEN_BACKUP_DOC = 2002
+
+        internal data class PointHistoryRecord(
+            val timeFormatted: String,
+            val accountEmail: String,
+            val category: String,
+            val title: String,
+            val pointsDelta: Int
+        )
+
+        internal fun classifyPointVlogEntry(entry: VlogEntry, knownEmails: List<String>): PointHistoryRecord? {
+            val msg = entry.message
+            if (msg.contains("Bắt đầu", ignoreCase = true) ||
+                msg.contains("Phát hiện", ignoreCase = true) ||
+                msg.contains("Hoàn thành Daily Task qua HTTP", ignoreCase = true) ||
+                msg.contains("Đang thử", ignoreCase = true) ||
+                msg.contains("Thất bại", ignoreCase = true)
+            ) {
+                return null
+            }
+
+            val resolvedEmail = when {
+                !entry.accountEmail.isNullOrBlank() -> entry.accountEmail
+                else -> knownEmails.firstOrNull { msg.contains(it, ignoreCase = true) }
+                    ?: Regex("""([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})""").find(msg)?.groupValues?.getOrNull(1)
+                    ?: "Hệ thống"
+            }
+
+            val ptsMatch = Regex("""\+(\d+)\s*(?:pts|đ|điểm)""", RegexOption.IGNORE_CASE).find(msg)
+            val pts = ptsMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
+
+            return when {
+                msg.contains("[POINT]", ignoreCase = true) || entry.tag.equals("POINT", ignoreCase = true) -> {
+                    if (pts <= 0) return null
+                    PointHistoryRecord(
+                        timeFormatted = entry.timeFormatted,
+                        accountEmail = resolvedEmail,
+                        category = "🔍 Search",
+                        title = msg.replace("[POINT]", "").trim(),
+                        pointsDelta = pts
+                    )
+                }
+                msg.contains("[DAPI]", ignoreCase = true) && msg.contains("thành công", ignoreCase = true) -> {
+                    PointHistoryRecord(
+                        timeFormatted = entry.timeFormatted,
+                        accountEmail = resolvedEmail,
+                        category = "📱 DAPI",
+                        title = msg.replace("[DAPI]", "").trim(),
+                        pointsDelta = pts
+                    )
+                }
+                (msg.contains("[TASK]", ignoreCase = true) || msg.contains("[FAST-PATH]", ignoreCase = true)) &&
+                    (msg.contains("Hoàn thành", ignoreCase = true) || msg.contains("cộng điểm", ignoreCase = true)) -> {
+                    PointHistoryRecord(
+                        timeFormatted = entry.timeFormatted,
+                        accountEmail = resolvedEmail,
+                        category = "📅 Daily Set",
+                        title = msg.replace("[TASK]", "").replace("[FAST-PATH]", "").trim(),
+                        pointsDelta = pts
+                    )
+                }
+                msg.contains("[KEEP-EARNING]", ignoreCase = true) && msg.contains("Hoàn thành", ignoreCase = true) -> {
+                    PointHistoryRecord(
+                        timeFormatted = entry.timeFormatted,
+                        accountEmail = resolvedEmail,
+                        category = "⚡ Keep Earning",
+                        title = msg.replace("[KEEP-EARNING]", "").trim(),
+                        pointsDelta = pts
+                    )
+                }
+                msg.contains("[READY-TO-CLAIM]", ignoreCase = true) && msg.contains("Đã nhận", ignoreCase = true) -> {
+                    PointHistoryRecord(
+                        timeFormatted = entry.timeFormatted,
+                        accountEmail = resolvedEmail,
+                        category = "🎁 Ready to Claim",
+                        title = msg.replace("[READY-TO-CLAIM]", "").trim(),
+                        pointsDelta = pts
+                    )
+                }
+                else -> null
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -265,6 +347,10 @@ class MainActivity : Activity() {
     private fun syncActiveProfilesBalance(isUserTriggered: Boolean = false) {
         scope.launch(Dispatchers.IO) {
             try {
+                if (ProfileManager.isInteractiveLoginActive) {
+                    android.util.Log.d("MainActivity", "Bỏ qua syncActiveProfilesBalance: Phiên đăng nhập tương tác đang hoạt động")
+                    return@launch
+                }
                 if (isUserTriggered) {
                     withContext(AndroidMainDispatcher) {
                         if (::swipeRefreshAccounts.isInitialized) {
@@ -276,6 +362,9 @@ class MainActivity : Activity() {
                 val profiles = database.rewardsDao().getAllActiveProfiles()
                 var updatedCount = 0
                 for (profile in profiles) {
+                    if (ProfileManager.isInteractiveLoginActive) {
+                        break
+                    }
                     val preserveDailyDoneToday = (profile.lastActiveDate == todayStr && profile.dailySetDone)
                     var activeCookies = profile.cookiesSnapshot
                     if (!activeCookies.isNullOrBlank()) {
@@ -808,9 +897,26 @@ class MainActivity : Activity() {
                         while (llTasksContainer.childCount > 1) {
                             llTasksContainer.removeViewAt(1)
                         }
-                        val doneCount = dailyTasksList.count { it.isCompleted }
-                        tvTasksBadge?.text = "$doneCount/${dailyTasksList.size} DAILY SET"
-                        for (task in dailyTasksList) {
+                        val isDailySetItem: (DailyTask) -> Boolean = { t ->
+                            t.id.contains("daily_set", ignoreCase = true) ||
+                                t.id.contains("dailyset", ignoreCase = true) ||
+                                t.id.startsWith("Global_DailySet")
+                        }
+                        val matchedDailySet = dailyTasksList.filter(isDailySetItem)
+                        val dailySetTasks = if (matchedDailySet.isNotEmpty()) matchedDailySet else dailyTasksList.take(3)
+                        val morePromoTasks = dailyTasksList.filter { t -> !dailySetTasks.any { it.id == t.id } }
+                        val dsDone = dailySetTasks.count { it.isCompleted }
+                        val dsTotal = dailySetTasks.size
+                        val promoDone = morePromoTasks.count { it.isCompleted }
+                        val promoTotal = morePromoTasks.size
+
+                        if (morePromoTasks.isNotEmpty()) {
+                            tvTasksBadge?.text = "$dsDone/$dsTotal Daily • $promoDone/$promoTotal Khám phá"
+                        } else {
+                            tvTasksBadge?.text = "$dsDone/$dsTotal DAILY SET"
+                        }
+
+                        val renderTaskRow = { task: DailyTask ->
                             val taskRow = LinearLayout(this@MainActivity).apply {
                                 layoutParams = LinearLayout.LayoutParams(
                                     LinearLayout.LayoutParams.MATCH_PARENT,
@@ -865,6 +971,30 @@ class MainActivity : Activity() {
                                 addView(tvStatus)
                             }
                             llTasksContainer.addView(taskRow)
+                        }
+
+                        for (task in dailySetTasks) {
+                            renderTaskRow(task)
+                        }
+
+                        if (morePromoTasks.isNotEmpty()) {
+                            val tvHeader = TextView(this@MainActivity).apply {
+                                layoutParams = LinearLayout.LayoutParams(
+                                    LinearLayout.LayoutParams.MATCH_PARENT,
+                                    LinearLayout.LayoutParams.WRAP_CONTENT
+                                ).apply {
+                                    setMargins(0, (8 * resources.displayMetrics.density).toInt(), 0, (4 * resources.displayMetrics.density).toInt())
+                                }
+                                text = "⚡ KHÁM PHÁ THÊM / KEEP EARNING"
+                                setTextColor(Color.parseColor("#F59E0B"))
+                                textSize = 10f
+                                typeface = Typeface.DEFAULT_BOLD
+                            }
+                            llTasksContainer.addView(tvHeader)
+
+                            for (task in morePromoTasks) {
+                                renderTaskRow(task)
+                            }
                         }
                     } else {
                         tvEmptyTasks?.visibility = View.VISIBLE
@@ -1270,86 +1400,6 @@ class MainActivity : Activity() {
         vlogAdapter.submitList(filtered)
     }
 
-    private data class PointHistoryRecord(
-        val timeFormatted: String,
-        val accountEmail: String,
-        val category: String,
-        val title: String,
-        val pointsDelta: Int
-    )
-
-    private fun classifyPointVlogEntry(entry: VlogEntry, knownEmails: List<String>): PointHistoryRecord? {
-        val msg = entry.message
-        if (msg.contains("Bắt đầu", ignoreCase = true) ||
-            msg.contains("Phát hiện", ignoreCase = true) ||
-            msg.contains("Hoàn thành Daily Task qua HTTP", ignoreCase = true) ||
-            msg.contains("Đang thử", ignoreCase = true) ||
-            msg.contains("Thất bại", ignoreCase = true)
-        ) {
-            return null
-        }
-
-        val resolvedEmail = when {
-            !entry.accountEmail.isNullOrBlank() -> entry.accountEmail
-            else -> knownEmails.firstOrNull { msg.contains(it, ignoreCase = true) }
-                ?: Regex("""([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})""").find(msg)?.groupValues?.getOrNull(1)
-                ?: "Hệ thống"
-        }
-
-        val ptsMatch = Regex("""\+(\d+)\s*(?:pts|đ|điểm)""", RegexOption.IGNORE_CASE).find(msg)
-        val pts = ptsMatch?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 0
-
-        return when {
-            msg.contains("[POINT]", ignoreCase = true) -> {
-                if (pts <= 0) return null
-                PointHistoryRecord(
-                    timeFormatted = entry.timeFormatted,
-                    accountEmail = resolvedEmail,
-                    category = "🔍 Search",
-                    title = msg.substringAfter(":", msg).trim(),
-                    pointsDelta = pts
-                )
-            }
-            msg.contains("[DAPI]", ignoreCase = true) && msg.contains("thành công", ignoreCase = true) -> {
-                PointHistoryRecord(
-                    timeFormatted = entry.timeFormatted,
-                    accountEmail = resolvedEmail,
-                    category = "📱 DAPI",
-                    title = msg.replace("[DAPI]", "").trim(),
-                    pointsDelta = pts
-                )
-            }
-            (msg.contains("[TASK]", ignoreCase = true) || msg.contains("[FAST-PATH]", ignoreCase = true)) &&
-                (msg.contains("Hoàn thành", ignoreCase = true) || msg.contains("cộng điểm", ignoreCase = true)) -> {
-                PointHistoryRecord(
-                    timeFormatted = entry.timeFormatted,
-                    accountEmail = resolvedEmail,
-                    category = "📅 Daily Set",
-                    title = msg.replace("[TASK]", "").replace("[FAST-PATH]", "").trim(),
-                    pointsDelta = pts
-                )
-            }
-            msg.contains("[KEEP-EARNING]", ignoreCase = true) && msg.contains("Hoàn thành", ignoreCase = true) -> {
-                PointHistoryRecord(
-                    timeFormatted = entry.timeFormatted,
-                    accountEmail = resolvedEmail,
-                    category = "⚡ Keep Earning",
-                    title = msg.replace("[KEEP-EARNING]", "").trim(),
-                    pointsDelta = pts
-                )
-            }
-            msg.contains("[READY-TO-CLAIM]", ignoreCase = true) && msg.contains("Đã nhận", ignoreCase = true) -> {
-                PointHistoryRecord(
-                    timeFormatted = entry.timeFormatted,
-                    accountEmail = resolvedEmail,
-                    category = "🎁 Ready to Claim",
-                    title = msg.replace("[READY-TO-CLAIM]", "").trim(),
-                    pointsDelta = pts
-                )
-            }
-            else -> null
-        }
-    }
 
     private fun showPointHistoryDialog() {
         scope.launch(Dispatchers.IO) {

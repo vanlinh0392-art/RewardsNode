@@ -25,7 +25,8 @@ data class DailyTask(
     val isCompleted: Boolean,
     val authKey: String = "",
     val activityType: String = "bingredirect",
-    val userId: String = ""
+    val userId: String = "",
+    val description: String = ""
 ) {
     val offerId: String get() = id
 }
@@ -41,33 +42,40 @@ object RewardsActivitiesEngine {
     const val DEFAULT_DESKTOP_EDGE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36 Edg/133.0.0.0"
 
     /**
-     * Phân loại loại nhiệm vụ (poll, quiz, news, urlreward) dựa trên URL và tiêu đề.
+     * Phân loại loại nhiệm vụ (poll, quiz, news, urlreward) dựa trên URL, tiêu đề và mô tả.
      */
-    fun detectTaskType(url: String?, title: String?): String {
-        val str = "${url ?: ""} ${title ?: ""}".lowercase(Locale.ROOT)
+    fun detectTaskType(url: String?, title: String?, description: String? = null): String {
+        val str = "${url ?: ""} ${title ?: ""} ${description ?: ""}".lowercase(Locale.ROOT)
         return when {
-            str.contains("poll") || str.contains("btoption") || str.contains("bầu chọn") || str.contains("khảo sát") -> "poll"
-            str.contains("quiz") || str.contains("trivia") || str.contains("supersonic") || str.contains("turbocharge") || str.contains("lightspeed") || str.contains("câu đố") || str.contains("thử thách") -> "quiz"
+            str.contains("poll") || str.contains("btoption") || str.contains("bầu chọn") || str.contains("bình chọn") || str.contains("khảo sát") -> "poll"
+            str.contains("quiz") || str.contains("trivia") || str.contains("supersonic") || str.contains("turbocharge") || str.contains("lightspeed") || str.contains("câu đố") || str.contains("thử thách") || str.contains("trắc nghiệm") || str.contains("đố vui") || str.contains("kiểm tra kiến thức") -> "quiz"
             str.contains("news") || str.contains("tin tức") || str.contains("báo") || str.contains("article") -> "news"
             else -> "urlreward"
         }
     }
 
 
-    private val PROMOTION_BLACKLIST_REGEX = Regex(
-        """\b(donate\w*|charit\w*|sweepstakes?|raffles?|spend\w*|buy\w*|purchas\w*|orders?|rent\w*|giveaways?|give)\b|quyên góp|từ thiện|trúng thưởng|quay số|nạp|mua|thuê|ủng hộ|đổi quà""",
+    internal val PROMOTION_BLACKLIST_REGEX = Regex(
+        """\b(donate\w*|charit\w*|sweepstakes?|raffles?|raffle|spend\w*|buy\w*|purchas\w*|orders?|rent\w*|giveaways?|give|redeem\w*|gift\s*card\w*|win|entries|entry|draws?|draw|lottery|checkout)\b|quyên góp|từ thiện|trúng thưởng|quay số|nạp|mua|thuê|ủng hộ|đổi quà|đổi\s*thưởng""",
         RegexOption.IGNORE_CASE
     )
 
     /**
      * Kiểm tra ưu đãi an toàn để tự động cày điểm mà không làm mất điểm hoặc tốn tiền.
-     * Loại trừ các hoạt động tiêu điểm (donate, sweepstake...), 0 điểm, khóa cấp độ, nạp/mua (pointValue > 100).
+     * Cho phép các ưu đãi độc quyền Level 2 (/levelbenefitexclusive) nếu điểm trong khoảng 5..50.
+     * Loại trừ các hoạt động tiêu điểm (donate, sweepstake, redeem, give...), 0 điểm, nạp/mua (pointValue > 100).
      */
-    fun isSafePromotion(title: String, destinationUrl: String?, pointValue: Int): Boolean {
+    fun isSafePromotion(title: String, destinationUrl: String?, pointValue: Int, description: String? = null): Boolean {
         if (pointValue <= 0 || pointValue > 100) return false
         val destLower = (destinationUrl ?: "").lowercase(Locale.ROOT)
-        if (destLower.contains("/levelbenefitexclusive") || destLower.contains("/referandearn")) return false
-        val combined = "$title ${destinationUrl ?: ""}"
+        if (destLower.contains("/levelbenefitexclusive") && pointValue !in 5..50) return false
+        if (destLower.contains("/referandearn") || destLower.contains("/redeem/") || destLower.contains("/redeem") || destLower.contains("/give/") || destLower.contains("/give")) return false
+        val safeDest = destinationUrl ?: ""
+        val safeDesc = description ?: ""
+        if (PROMOTION_BLACKLIST_REGEX.containsMatchIn(title) ||
+            PROMOTION_BLACKLIST_REGEX.containsMatchIn(safeDest) ||
+            PROMOTION_BLACKLIST_REGEX.containsMatchIn(safeDesc)) return false
+        val combined = "$title $safeDest $safeDesc"
         if (PROMOTION_BLACKLIST_REGEX.containsMatchIn(combined)) return false
         return true
     }
@@ -85,7 +93,7 @@ object RewardsActivitiesEngine {
     ): Int {
         if (task.authKey.isBlank() || task.offerId.isBlank()) return 0
 
-        val cookieHeader = RewardsBalanceExtractor.filterBingCookies(cookiesJson).ifBlank { cookiesJson }
+        val cookieHeader = RewardsBalanceExtractor.filterBingCookies(cookiesJson)
         if (cookieHeader.isBlank()) return 0
 
         val proxy = if (!proxyUrl.isNullOrBlank()) {
@@ -235,7 +243,7 @@ object RewardsActivitiesEngine {
             return@withContext false
         }
 
-        val cookieHeader = RewardsBalanceExtractor.filterBingCookies(cookiesSnapshot).ifBlank { cookiesSnapshot ?: "" }
+        val cookieHeader = RewardsBalanceExtractor.filterBingCookies(cookiesSnapshot)
         val proxy = if (!proxyUrl.isNullOrBlank()) {
             try {
                 val uri = java.net.URI(if (proxyUrl.contains("://")) proxyUrl else "http://$proxyUrl")
@@ -295,7 +303,8 @@ object RewardsActivitiesEngine {
                         continue
                     }
                 } else if (code in 200..299) {
-                    connection.inputStream?.bufferedReader()?.use { it.readText() }
+                    val buffer = ByteArray(4096)
+                    connection.inputStream?.use { it.read(buffer) }
                     isSuccess = true
                 }
                 break
@@ -385,7 +394,6 @@ object RewardsActivitiesEngine {
                             }
                             el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             el.click();
-                            el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                             return true;
                         }
                         return false;
@@ -578,6 +586,8 @@ object RewardsActivitiesEngine {
                         var el = cardElements[c];
                         var titleNode = el.querySelector('h2, h3, p.text-sectionHeader, p.text-body, [data-bi-name="headline"]');
                         var title = titleNode ? titleNode.innerText.trim() : ('Daily Task ' + (c + 1));
+                        var descNode = el.querySelector('p.text-description, p.desc, [data-bi-name="description"], .description, .c-subheading');
+                        var desc = descNode ? descNode.innerText.trim() : '';
                         var pointsNode = el.querySelector('p.text-metadata, span.points, [aria-label*="point"]');
                         var ptsStr = pointsNode ? pointsNode.innerText : '10';
                         var ptsNum = parseInt((ptsStr.match(/\d+/) || ['10'])[0], 10);
@@ -588,6 +598,7 @@ object RewardsActivitiesEngine {
                         tasks.push({
                             id: offerId,
                             title: title,
+                            description: desc,
                             pointValue: ptsNum,
                             destinationUrl: dest,
                             taskType: detectType(dest, title),
@@ -626,7 +637,6 @@ object RewardsActivitiesEngine {
 
                         opt.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         opt.click();
-                        opt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                         return "true";
                     }
                     return "false";
@@ -645,15 +655,24 @@ object RewardsActivitiesEngine {
         return """
             (function() {
                 try {
-                    // 1. Click nút bắt đầu Quiz nếu có (#rqStartQuiz)
+                    // 1. Click nút bắt đầu Quiz nếu có (#rqStartQuiz, Start playing, Bắt đầu, Làm bài)
                     var startBtn = document.getElementById('rqStartQuiz') || 
                                    document.querySelector('input#rqStartQuiz') || 
                                    document.querySelector('[id*="StartQuiz" i]') ||
-                                   document.querySelector('input[value*="Start playing" i], input[value*="Take the quiz" i]');
+                                   document.querySelector('input[value*="Start playing" i], input[value*="Take the quiz" i], input[value*="Bắt đầu" i], input[value*="Làm bài" i]');
+                    if (!startBtn) {
+                        var allButtons = document.querySelectorAll('button, div[role="button"], a.b_btn');
+                        for (var b = 0; b < allButtons.length; b++) {
+                            var btnTxt = (allButtons[b].innerText || allButtons[b].textContent || '').trim().toLowerCase();
+                            if (btnTxt.indexOf('bắt đầu') !== -1 || btnTxt.indexOf('làm bài') !== -1 || btnTxt.indexOf('start playing') !== -1 || btnTxt.indexOf('take the quiz') !== -1) {
+                                startBtn = allButtons[b];
+                                break;
+                            }
+                        }
+                    }
                     if (startBtn && (startBtn.offsetParent !== null || startBtn.getClientRects().length > 0)) {
                         startBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         startBtn.click();
-                        startBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                         return "true";
                     }
 
@@ -662,28 +681,35 @@ object RewardsActivitiesEngine {
                     if (correctOption && !correctOption.classList.contains('rqAnswerOptionSelected')) {
                         correctOption.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         correctOption.click();
-                        correctOption.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                         return "true";
                     }
 
-                    // 3. Fallback: Click các lựa chọn .rqOption, .rqAnswerOption
-                    var options = document.querySelectorAll('.rqOption:not([disabled]), .rqAnswerOption:not([disabled]), div[id^="rqAnswerOption"], input.rqOption');
+                    // 3. Fallback: Click các lựa chọn .rqOption, .rqAnswerOption, .bt_option, .wk_ans
+                    var options = document.querySelectorAll('.rqOption:not([disabled]), .rqAnswerOption:not([disabled]), .bt_option:not([disabled]), .wk_ans:not([disabled]), .btOption:not([disabled]), div[id^="rqAnswerOption"], div[id^="btoption"], input.rqOption');
                     for (var i = 0; i < options.length; i++) {
                         var opt = options[i];
                         if (!opt.classList.contains('rqAnswerOptionSelected') && !opt.classList.contains('disabled')) {
                             opt.scrollIntoView({ behavior: 'smooth', block: 'center' });
                             opt.click();
-                            opt.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                             return "true";
                         }
                     }
 
-                    // 4. Click nút sang câu hỏi tiếp theo nếu hiển thị
+                    // 4. Click nút sang câu hỏi tiếp theo nếu hiển thị (Next, Tiếp theo, Tiếp)
                     var nextBtn = document.getElementById('rqNextQuestion') || 
-                                  document.querySelector('.rqNext, input[value*="Next" i], [id*="NextQuestion" i]');
+                                  document.querySelector('.rqNext, input[value*="Next" i], input[value*="Tiếp theo" i], input[value*="Tiếp" i], button[aria-label*="Tiếp theo" i], button[aria-label*="Tiếp" i], [aria-label*="Next" i], [id*="NextQuestion" i]');
+                    if (!nextBtn) {
+                        var allNext = document.querySelectorAll('button, div[role="button"], a.b_btn, input[type="button"], input[type="submit"]');
+                        for (var n = 0; n < allNext.length; n++) {
+                            var nTxt = (allNext[n].innerText || allNext[n].textContent || allNext[n].value || '').trim().toLowerCase();
+                            if (nTxt === 'tiếp' || nTxt === 'tiếp theo' || nTxt.indexOf('tiếp') === 0 || nTxt === 'next') {
+                                nextBtn = allNext[n];
+                                break;
+                            }
+                        }
+                    }
                     if (nextBtn && (nextBtn.offsetParent !== null || nextBtn.getClientRects().length > 0)) {
                         nextBtn.click();
-                        nextBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
                         return "true";
                     }
 
@@ -802,12 +828,13 @@ object RewardsActivitiesEngine {
                 val title = obj.optString("title", obj.optString("name", "Daily Task ${i + 1}"))
                 val pointValue = obj.optInt("pointValue", obj.optInt("pointProgressMax", obj.optInt("points", 10)))
                 val destinationUrl = obj.optString("destinationUrl", obj.optString("destination", ""))
-                val taskType = obj.optString("taskType", detectTaskType(destinationUrl, title))
+                val description = obj.optString("description", obj.optString("desc", ""))
+                val taskType = obj.optString("taskType", detectTaskType(destinationUrl, title, description))
                 val isCompleted = obj.optBoolean("isCompleted", obj.optBoolean("complete", false))
-                val authKey = obj.optString("authKey", obj.optString("hash", ""))
+                val authKey = obj.optString("hash", obj.optString("authKey", ""))
                 val activityType = obj.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
                 val userId = obj.optString("userId", "")
-                list.add(DailyTask(id, title, pointValue, destinationUrl, taskType, isCompleted, authKey, activityType, userId))
+                list.add(DailyTask(id, title, pointValue, destinationUrl, taskType, isCompleted, authKey, activityType, userId, description))
             }
             return list
         }
@@ -883,11 +910,12 @@ object RewardsActivitiesEngine {
                         val title = item.optString("title", item.optString("name", "Daily Task ${j + 1}"))
                         val dest = item.optString("destinationUrl", item.optString("destination", ""))
                         val offerId = item.optString("offerId", item.optString("id", item.optString("name", "daily_set_${j + 1}")))
-                        val taskType = detectTaskType(dest, title)
+                        val description = item.optString("description", item.optString("desc", ""))
+                        val taskType = detectTaskType(dest, title, description)
                         val authKey = item.optString("hash", item.optString("authKey", ""))
                         val activityType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
-                        if (isSafePromotion(title, dest, pMax) && list.none { it.id == offerId }) {
-                            list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId))
+                        if (isSafePromotion(title, dest, pMax, description) && list.none { it.id == offerId }) {
+                            list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId, description))
                         }
                     }
                 }
@@ -906,11 +934,12 @@ object RewardsActivitiesEngine {
                         val title = item.optString("title", item.optString("name", "Daily Task ${j + 1}"))
                         val dest = item.optString("destinationUrl", item.optString("destination", ""))
                         val offerId = item.optString("offerId", item.optString("id", item.optString("name", "daily_set_${j + 1}")))
-                        val taskType = detectTaskType(dest, title)
+                        val description = item.optString("description", item.optString("desc", ""))
+                        val taskType = detectTaskType(dest, title, description)
                         val authKey = item.optString("hash", item.optString("authKey", ""))
                         val activityType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
-                        if (isSafePromotion(title, dest, pMax) && list.none { it.id == offerId }) {
-                            list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId))
+                        if (isSafePromotion(title, dest, pMax, description) && list.none { it.id == offerId }) {
+                            list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId, description))
                         }
                     }
                 }
@@ -923,7 +952,7 @@ object RewardsActivitiesEngine {
             if (morePromos != null) {
                 for (j in 0 until morePromos.length()) {
                     val item = morePromos.optJSONObject(j) ?: continue
-                    val pMax = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else if (item.has("points")) item.optInt("points", 0) else 10
+                    val pMax = if (item.has("pointProgressMax")) item.optInt("pointProgressMax", 0) else if (item.has("points")) item.optInt("points", 0) else 0
                     if (pMax <= 0) continue
                     val exclStatus = item.optString("exclusiveLockedFeatureStatus", "").lowercase(Locale.ROOT)
                     val isUnlockedAttr = item.optJSONObject("attributes")?.optString("is_unlocked", "True") ?: "True"
@@ -933,11 +962,12 @@ object RewardsActivitiesEngine {
                     val title = item.optString("title", item.optString("name", "More Promotion ${j + 1}"))
                     val dest = item.optString("destinationUrl", item.optString("destination", ""))
                     val offerId = item.optString("offerId", item.optString("id", item.optString("name", "more_promo_${j + 1}")))
-                    val taskType = detectTaskType(dest, title)
+                    val description = item.optString("description", item.optString("desc", ""))
+                    val taskType = detectTaskType(dest, title, description)
                     val authKey = item.optString("hash", item.optString("authKey", ""))
                     val activityType = item.optString("activityType", "bingredirect").ifBlank { "bingredirect" }
-                    if (isSafePromotion(title, dest, pMax) && list.none { it.id == offerId }) {
-                        list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId))
+                    if (isSafePromotion(title, dest, pMax, description) && list.none { it.id == offerId }) {
+                        list.add(DailyTask(offerId, title, pMax, dest, taskType, isDone, authKey, activityType, rootUserId, description))
                     }
                 }
             }
@@ -1001,7 +1031,7 @@ object RewardsActivitiesEngine {
      */
     suspend fun extractDailyTasks(webView: WebView): List<DailyTask> = withContext(AndroidMainDispatcher) {
         val raw = evaluateScript(webView, createDailySetExtractorScript())
-        parseDailyTasks(raw).filter { isSafePromotion(it.title, it.destinationUrl, it.pointValue) }
+        parseDailyTasks(raw).filter { isSafePromotion(it.title, it.destinationUrl, it.pointValue, it.description) }
     }
 
     /**
@@ -1047,6 +1077,7 @@ object RewardsActivitiesEngine {
                         true
                     } else if (task.destinationUrl.isNotBlank() && 
                                task.destinationUrl.startsWith("https://") &&
+                               isAllowedRewardsHost(task.destinationUrl) &&
                                webView.url != task.destinationUrl) {
                         webView.loadUrl(task.destinationUrl)
                         true
@@ -1061,18 +1092,34 @@ object RewardsActivitiesEngine {
     }
 
     /**
+     * SEC-06: Whitelist kiểm tra host đích đến của nhiệm vụ, chỉ cho phép thuộc các domain chính thống
+     * (.bing.com / .microsoft.com / .msn.com) trước khi gọi WebView.loadUrl() để triệt tiêu nguy cơ Open Redirect / phishing.
+     */
+    internal fun isAllowedRewardsHost(url: String): Boolean {
+        if (url.isBlank()) return false
+        return try {
+            val host = java.net.URI(url).host?.lowercase(Locale.ROOT) ?: return false
+            host == "bing.com" || host.endsWith(".bing.com") ||
+            host == "microsoft.com" || host.endsWith(".microsoft.com") ||
+            host == "msn.com" || host.endsWith(".msn.com")
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
      * Kiểm tra xem nhiệm vụ có bắt buộc phải tương tác DOM (Quiz hoặc Poll) hay không.
      * urlreward / news / browse chạy thuần túy qua HTTP, không cần WebView.
      */
     fun isInteractiveDomTask(task: DailyTask): Boolean {
         val type = task.taskType.lowercase(Locale.ROOT)
-        val dest = task.destinationUrl.lowercase(Locale.ROOT)
-        val title = task.title.lowercase(Locale.ROOT)
-        return type == "quiz" || type == "poll" ||
-               dest.contains("form=dsetqu") || dest.contains("btoption") ||
-               dest.contains("quiz") || dest.contains("poll") ||
-               title.contains("quiz") || title.contains("poll") ||
-               title.contains("thử thách") || title.contains("bình chọn") || title.contains("khảo sát")
+        if (type == "quiz" || type == "poll") return true
+        val text = "${task.title} ${task.description} ${task.destinationUrl}".lowercase(Locale.ROOT)
+        val keywords = listOf(
+            "trắc nghiệm", "đố vui", "câu đố", "thử thách", "thủ đô", "kiểm tra kiến thức",
+            "quiz", "trivia", "poll", "khảo sát", "bình chọn", "form=dsetqu", "btoption"
+        )
+        return keywords.any { text.contains(it) }
     }
 
     /**

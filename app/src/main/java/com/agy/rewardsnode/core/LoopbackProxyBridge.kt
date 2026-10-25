@@ -119,11 +119,14 @@ class LoopbackProxyBridge private constructor() {
             val method = parts[0].uppercase()
             val uri = parts[1]
 
-            // Đọc toàn bộ Header từ client đến khi gặp dòng trống
+            // Đọc toàn bộ Header từ client đến khi gặp dòng trống (giới hạn tối đa 100 headers - SEC-03)
             val headers = mutableListOf<String>()
             while (true) {
                 val line = readAsciiLine(clientIn)
                 if (line.isEmpty()) break
+                if (headers.size >= 100) {
+                    throw IOException("HTTP headers count vượt quá giới hạn tối đa (max 100)")
+                }
                 headers.add(line)
             }
 
@@ -356,6 +359,7 @@ class LoopbackProxyBridge private constructor() {
             }
             0x03 -> {
                 val len = upIn.read()
+                if (len <= 0) throw EOFException("Unexpected EOF hoặc độ dài domain không hợp lệ khi đọc SOCKS5 address: $len")
                 val b = ByteArray(len)
                 readFully(upIn, b)
             }

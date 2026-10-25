@@ -359,24 +359,68 @@ class LoginDialog(
                     cookieExpired = false
                 )
             } else {
-                AccountProfile(
-                    id = profileId,
-                    email = emailCandidate,
-                    profileName = nameCandidate,
-                    cookiesSnapshot = finalCookies,
-                    availablePoints = points,
-                    totalPoints = points,
-                    baselinePointsToday = points,
-                    lifetimePoints = lifetime,
-                    streakCount = streak,
-                    level = level,
-                    targetSearches = if (level == 1) 35 else 55,
-                    dailySetDone = bal?.dailySetDone ?: false,
-                    dailySetProgress = if (bal?.dailySetDone == true) (bal.dailySetTotal.takeIf { it > 0 } ?: 3) else (bal?.dailySetProgress ?: 0),
-                    dailySetTotal = if ((bal?.dailySetTotal ?: 0) > 0) bal!!.dailySetTotal else 3,
-                    claimablePoints = bal?.claimablePoints ?: 0,
-                    cookieExpired = false
-                )
+                val isExtractionVerified = bal != null && bal.isSuccess && bal.availablePoints > 0 &&
+                    (bal.email.isNullOrBlank() || emailCandidate.startsWith("account_") || bal.email.equals(emailCandidate, ignoreCase = true))
+
+                if (!isExtractionVerified || (bal?.availablePoints ?: 0) <= 0) {
+                    AccountProfile(
+                        id = profileId,
+                        email = emailCandidate,
+                        profileName = nameCandidate,
+                        cookiesSnapshot = finalCookies,
+                        availablePoints = 0,
+                        totalPoints = 0,
+                        baselinePointsToday = 0,
+                        pointsEarnedToday = 0,
+                        lifetimePoints = 0,
+                        streakCount = 0,
+                        level = 1,
+                        targetSearches = 35,
+                        pcProgress = 0,
+                        pcMax = 30,
+                        mobileProgress = 0,
+                        mobileMax = 0,
+                        edgeProgress = 0,
+                        edgeMax = 0,
+                        readProgress = 0,
+                        readMax = 30,
+                        dailySetDone = false,
+                        dailySetProgress = 0,
+                        dailySetTotal = 3,
+                        claimablePoints = 0,
+                        cookieExpired = false
+                    )
+                } else {
+                    val verifiedBal = bal!!
+                    val safeLevel = if (verifiedBal.level in 1..2) verifiedBal.level else 1
+                    AccountProfile(
+                        id = profileId,
+                        email = emailCandidate,
+                        profileName = nameCandidate,
+                        cookiesSnapshot = finalCookies,
+                        availablePoints = verifiedBal.availablePoints,
+                        totalPoints = verifiedBal.availablePoints,
+                        baselinePointsToday = verifiedBal.availablePoints,
+                        pointsEarnedToday = verifiedBal.pointsEarnedToday,
+                        lifetimePoints = if (verifiedBal.lifetimePoints > 0) verifiedBal.lifetimePoints else verifiedBal.availablePoints,
+                        streakCount = verifiedBal.streakCount,
+                        level = safeLevel,
+                        targetSearches = if (safeLevel == 1) 35 else 55,
+                        pcProgress = verifiedBal.pcProgress,
+                        pcMax = if (verifiedBal.pcMax > 0) verifiedBal.pcMax else (if (safeLevel == 1) 30 else 90),
+                        mobileProgress = verifiedBal.mobileProgress,
+                        mobileMax = if (verifiedBal.mobileMax > 0) verifiedBal.mobileMax else (if (safeLevel == 1) 0 else 60),
+                        edgeProgress = verifiedBal.edgeProgress,
+                        edgeMax = verifiedBal.edgeMax,
+                        readProgress = verifiedBal.readNewsProgress,
+                        readMax = if (verifiedBal.readNewsMax > 0) verifiedBal.readNewsMax else 30,
+                        dailySetDone = verifiedBal.dailySetDone,
+                        dailySetProgress = if (verifiedBal.dailySetDone) (verifiedBal.dailySetTotal.takeIf { it > 0 } ?: 3) else verifiedBal.dailySetProgress,
+                        dailySetTotal = if (verifiedBal.dailySetTotal > 0) verifiedBal.dailySetTotal else 3,
+                        claimablePoints = verifiedBal.claimablePoints,
+                        cookieExpired = false
+                    )
+                }
             }
 
             // Chủ động thu hoạch sớm (Pre-fetch) DAPI Refresh/Access Token ngay khi phiên login.live.com còn mới 100%
