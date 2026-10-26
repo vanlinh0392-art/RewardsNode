@@ -14,17 +14,24 @@
         android:layout_height="wrap_content">
 
         <LinearLayout
+            android:id="@+id/layoutAccountHeader"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_alignParentStart="true"
             android:layout_centerVertical="true"
             android:layout_toStartOf="@+id/switchAccountEnabled"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?android:attr/selectableItemBackground"
             android:orientation="vertical">
 
             <TextView
                 android:id="@+id/tvAccountEmail"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
+                android:clickable="true"
+                android:focusable="true"
+                android:foreground="?android:attr/selectableItemBackground"
                 android:ellipsize="middle"
                 android:singleLine="true"
                 android:text="user@outlook.com"

@@ -311,4 +311,166 @@ class RewardsBalanceExtractorBreakdownTest {
         assertEquals(60, result.mobileProgress)
         assertEquals(60, result.mobileMax)
     }
+
+    @Test
+    fun `test payload bing_search_daily_points 60 when pcProgress and mobileProgress are 0 is not erroneously assigned to PC 60 of 90`() {
+        val testAccountId = "test_no_lump_pc_60"
+        RewardsBalanceExtractor.latestTelemetryMap.remove(testAccountId)
+        try {
+            val flyoutJson = JSONObject().apply {
+                put("userStatus", JSONObject().apply {
+                    put("availablePoints", 1694)
+                    put("level", 2)
+                    put("levelInfoPromotion", JSONObject().apply {
+                        put("attributes", JSONObject().apply {
+                            put("bing_search_daily_points", "60")
+                            put("level", "2")
+                        })
+                    })
+                })
+                put("dailySetPromotions", JSONObject())
+            }
+
+            val parsed = RewardsBalanceExtractor.parseFlyoutJsonPayload(flyoutJson, accountId = testAccountId)
+            assertTrue(parsed.isSuccess)
+            assertNotEquals("bing_search_daily_points = 60 không được gán nhầm PC 60/90 khi pcProgress = 0, mobileProgress = 0", 60, parsed.pcProgress)
+            assertEquals("pcProgress phải giữ nguyên 0 để enrich exact breakdown hoặc tránh ghi đè", 0, parsed.pcProgress)
+            assertEquals("mobileProgress giữ nguyên 0 khi chưa có breakdown rõ ràng", 0, parsed.mobileProgress)
+        } finally {
+            RewardsBalanceExtractor.latestTelemetryMap.remove(testAccountId)
+        }
+    }
+
+    @Test
+    fun `test parsePointsBreakdownHtml extracts Desktop 0 of 90, Mobile 60 of 60, and Offers 85 with 100 percent accuracy`() {
+        val sampleHtml = """
+            <div class="points-breakdown-modal">
+                <div class="c-heading">Today's points</div>
+                <div class="row">
+                    <span>Desktop Bing search</span>
+                    <span>0/90</span>
+                </div>
+                <div class="row">
+                    <span>Mobile Bing search</span>
+                    <span>60/60</span>
+                </div>
+                <div class="row">
+                    <span>Offers</span>
+                    <span>85</span>
+                </div>
+            </div>
+        """.trimIndent()
+
+        val result = RewardsBalanceExtractor.parsePointsBreakdownHtml(sampleHtml)
+        assertTrue(result.isSuccess)
+        assertEquals(0, result.pcProgress)
+        assertEquals(90, result.pcMax)
+        assertEquals(60, result.mobileProgress)
+        assertEquals(60, result.mobileMax)
+        assertEquals(85, result.offersPoints)
+        assertNotNull("pointsBreakdownJson không được null", result.pointsBreakdownJson)
+        val json = JSONObject(result.pointsBreakdownJson!!)
+        assertEquals(0, json.getJSONObject("desktopSearch").getInt("progress"))
+        assertEquals(90, json.getJSONObject("desktopSearch").getInt("max"))
+        assertEquals(60, json.getJSONObject("mobileSearch").getInt("progress"))
+        assertEquals(60, json.getJSONObject("mobileSearch").getInt("max"))
+        assertEquals(85, json.getJSONObject("offers").getInt("progress"))
+    }
+
+    @Test
+    fun `test AccountProfile applyBalance does not overwrite existing mobileProgress 60 to 0 on same day`() {
+        val profile = com.agy.rewardsnode.data.model.AccountProfile(
+            id = "test_profile_mob_protect",
+            email = "user@example.com",
+            profileName = "Test User",
+            level = 2,
+            lastActiveDate = "2026-10-26",
+            mobileProgress = 60,
+            mobileMax = 60,
+            pcProgress = 0,
+            pcMax = 90
+        )
+
+        // Mô phỏng server trả về kết quả chưa có breakdown (mobileProgress = 0, pcProgress = 60 do gộp sai hoặc chưa có)
+        val serverBalance = RewardsBalanceExtractor.ExtractedRewardsBalance(
+            isSuccess = true,
+            availablePoints = 1754,
+            pointsEarnedToday = 145,
+            level = 2,
+            pcProgress = 60,
+            pcMax = 90,
+            mobileProgress = 0,
+            mobileMax = 60,
+            source = "flyout_http",
+            hasExactCounters = false
+        )
+
+        profile.applyBalance(serverBalance, todayStr = "2026-10-26")
+
+        assertEquals("mobileProgress của AccountProfile không được bị ghi đè thành 0 khi cùng ngày", 60, profile.mobileProgress)
+        assertEquals("pcProgress được hiệu chỉnh trừ mobileProgress đã có", 0, profile.pcProgress)
+    }
+
+    @Test
+    fun `test AccountProfile applyBalance synchronously updates mobileProgress when server has exact breakdown`() {
+        val profile = com.agy.rewardsnode.data.model.AccountProfile(
+            id = "test_profile_breakdown_sync",
+            email = "user@example.com",
+            profileName = "Test User",
+            level = 2,
+            lastActiveDate = "2026-10-26",
+            mobileProgress = 0,
+            mobileMax = 60,
+            pcProgress = 0,
+            pcMax = 90
+        )
+
+        val breakdownJsonStr = RewardsBalanceExtractor.buildSanitizedBreakdownJson(
+            pcProgress = 0,
+            pcMax = 90,
+            mobileProgress = 60,
+            mobileMax = 60,
+            edgeProgress = 0,
+            edgeMax = 0,
+            offersPoints = 85
+        )
+
+        val serverBalance = RewardsBalanceExtractor.ExtractedRewardsBalance(
+            isSuccess = true,
+            availablePoints = 1754,
+            pointsEarnedToday = 145,
+            level = 2,
+            pcProgress = 0,
+            pcMax = 90,
+            mobileProgress = 60,
+            mobileMax = 60,
+            source = "flyout_http+breakdown",
+            hasExactCounters = true,
+            pointsBreakdownJson = breakdownJsonStr
+        )
+
+        profile.applyBalance(serverBalance, todayStr = "2026-10-26")
+
+        assertEquals("mobileProgress phải cập nhật thành 60 từ server", 60, profile.mobileProgress)
+        assertEquals("pcProgress phải cập nhật thành 0 từ server", 0, profile.pcProgress)
+        assertEquals("pointsBreakdownJson phải được cập nhật trên AccountProfile", breakdownJsonStr, profile.pointsBreakdownJson)
+    }
+
+    @Test
+    fun `test prepareBreakdownCookies merges bing cookies and critical auth tokens safely`() {
+        val snapshotJson = JSONObject().apply {
+            put("https://login.live.com/", "RPSTAuth=token123; MSPRequ=req1; OtherLive=ignore")
+            put("https://rewards.bing.com/", "_RwBf=rwb1; _U=u1; MUID=muid1; KievRPSToken=kiev1")
+            put("https://www.bing.com/", "SRCHUSR=srch1; SRCHS=s1")
+        }.toString()
+
+        val cookies = RewardsBalanceExtractor.prepareBreakdownCookies(snapshotJson)
+        assertTrue(cookies.contains("_U=u1"))
+        assertTrue(cookies.contains("_RwBf=rwb1"))
+        assertTrue(cookies.contains("MUID=muid1"))
+        assertTrue(cookies.contains("KievRPSToken=kiev1"))
+        assertTrue(cookies.contains("SRCHUSR=srch1"))
+        assertTrue(cookies.contains("RPSTAuth=token123"))
+        assertFalse("Không được nhồi cookie không liên quan", cookies.contains("OtherLive"))
+    }
 }

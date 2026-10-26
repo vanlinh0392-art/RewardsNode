@@ -53,7 +53,8 @@ class AccountAdapter(
     private val onToggleEnabled: ((AccountProfile, Boolean) -> Unit)? = null,
     private val onRefreshCompleted: ((AccountProfile) -> Unit)? = null,
     private val coroutineScope: CoroutineScope? = null,
-    private val onRunSingleClicked: ((AccountProfile) -> Unit)? = null
+    private val onRunSingleClicked: ((AccountProfile) -> Unit)? = null,
+    var onAccountDetailsClicked: ((AccountProfile) -> Unit)? = null
 ) : BaseAdapter() {
 
     private var accounts: List<AccountProfile> = emptyList()
@@ -146,6 +147,7 @@ class AccountAdapter(
     inner class ViewHolder(val itemView: View) {
         var boundAccountId: String? = null
 
+        private val layoutAccountHeader: View? = itemView.findViewById(R.id.layoutAccountHeader)
         private val tvEmail: TextView = itemView.findViewById(R.id.tvAccountEmail)
         private val tvStreak: TextView = itemView.findViewById(R.id.tvAccountStreak)
         private val tvLevel: TextView = itemView.findViewById(R.id.tvAccountLevelBadge)
@@ -528,6 +530,8 @@ class AccountAdapter(
                     }
                 }
             }
+            tvEmail.setOnClickListener { onAccountDetailsClicked?.invoke(account) }
+            layoutAccountHeader?.setOnClickListener { onAccountDetailsClicked?.invoke(account) }
             btnAuth.setOnClickListener { onReAuthClicked(account) }
             btnProxy.setOnClickListener { onEditProxyClicked(account) }
             btnDelete.setOnClickListener { onDeleteClicked(account) }

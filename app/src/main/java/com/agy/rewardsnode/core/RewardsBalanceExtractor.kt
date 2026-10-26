@@ -245,7 +245,8 @@ object RewardsBalanceExtractor {
         val redeemGoalMax: Int = 0,
         val isAccountSuspended: Boolean = false,
         val isRewardsUser: Boolean = false,
-        val hasExactCounters: Boolean = false
+        val hasExactCounters: Boolean = false,
+        val pointsBreakdownJson: String? = null
     )
 
     /**
@@ -957,14 +958,14 @@ object RewardsBalanceExtractor {
 
         fun enrichWithExactBreakdownIfNeeded(balance: ExtractedRewardsBalance): ExtractedRewardsBalance {
             if (!balance.isSuccess) return balance
-            if (balance.level >= 2 && (balance.mobileProgress == 0 || balance.pcProgress >= balance.pcMax)) {
+            if (balance.level >= 2 && (!balance.hasExactCounters || balance.mobileProgress == 0 || balance.pcProgress >= balance.pcMax)) {
                 val effectiveCookieKey = cookieKey ?: bingCookies.hashCode()
                 val cached = pointsBreakdownCache[effectiveCookieKey]
                 val now = System.currentTimeMillis()
                 val bd = if (cached != null && (now - cached.first) < 60_000L) {
                     cached.second
                 } else {
-                    val fresh = queryPointsBreakdownHttp(bingCookies, effectiveUa, proxyUrl)
+                    val fresh = queryPointsBreakdownHttp(cookiesSnapshot ?: bingCookies, effectiveUa, proxyUrl)
                     if (pointsBreakdownCache.size > 200) pointsBreakdownCache.clear()
                     pointsBreakdownCache[effectiveCookieKey] = Pair(now, fresh)
                     fresh
@@ -976,7 +977,7 @@ object RewardsBalanceExtractor {
                     val mobM = if (bd.mobileMax > 0) bd.mobileMax else balance.mobileMax
                     val edgeProg = if (bd.edgeMax > 0) bd.edgeProgress else balance.edgeProgress
                     val edgeM = if (bd.edgeMax > 0) bd.edgeMax else balance.edgeMax
-                    val effEarned = pcProg + mobProg + edgeProg
+                    val effEarned = pcProg + mobProg + edgeProg + bd.offersPoints
                     return balance.copy(
                         source = "${balance.source}+breakdown",
                         pcProgress = pcProg,
@@ -986,7 +987,16 @@ object RewardsBalanceExtractor {
                         edgeProgress = edgeProg,
                         edgeMax = edgeM,
                         pointsEarnedToday = maxOf(balance.pointsEarnedToday, effEarned),
-                        hasExactCounters = true
+                        hasExactCounters = true,
+                        pointsBreakdownJson = bd.pointsBreakdownJson ?: buildSanitizedBreakdownJson(
+                            pcProgress = pcProg,
+                            pcMax = pcM,
+                            mobileProgress = mobProg,
+                            mobileMax = mobM,
+                            edgeProgress = edgeProg,
+                            edgeMax = edgeM,
+                            offersPoints = bd.offersPoints
+                        )
                     )
                 }
             }
@@ -1551,8 +1561,9 @@ object RewardsBalanceExtractor {
             var edgeMax = jsonEdgeMax ?: (existing?.edgeMax ?: 0)
             var edgeProgress = jsonEdgeProgress ?: (existing?.edgeProgress ?: 0)
 
+            val breakdownFromHtml = parsePointsBreakdownHtml(unescapedBody)
+            var pointsBreakdownJson = breakdownFromHtml.pointsBreakdownJson ?: existing?.pointsBreakdownJson
             if (jsonPcProgress == null && jsonMobProgress == null) {
-                val breakdownFromHtml = parsePointsBreakdownHtml(unescapedBody)
                 if (breakdownFromHtml.isSuccess) {
                     pcProgress = breakdownFromHtml.pcProgress
                     if (breakdownFromHtml.pcMax > 0) pcMax = breakdownFromHtml.pcMax
@@ -1562,24 +1573,41 @@ object RewardsBalanceExtractor {
                     edgeMax = breakdownFromHtml.edgeMax
                 } else if (parsedSearchDailyPoints != null) {
                     val knownMob = existing?.mobileProgress ?: 0
-                    if (knownMob > 0) {
-                        mobileProgress = minOf(knownMob, mobileMax)
-                        pcProgress = minOf(maxOf(0, parsedSearchDailyPoints - mobileProgress), pcMax)
-                    } else if (level == 1) {
+                    val knownPc = existing?.pcProgress ?: 0
+                    if (level == 1) {
                         pcProgress = minOf(parsedSearchDailyPoints, pcMax)
                         mobileProgress = 0
-                    } else {
-                        val existingPc = existing?.pcProgress
-                        if (existingPc != null) {
-                            pcProgress = minOf(existingPc, pcMax)
-                            if (mobileMax > 0 && parsedSearchDailyPoints > pcProgress) {
-                                mobileProgress = minOf(parsedSearchDailyPoints - pcProgress, mobileMax)
-                            } else {
-                                mobileProgress = 0
+                    } else if (knownMob > 0 && knownPc > 0) {
+                        mobileProgress = minOf(knownMob, mobileMax)
+                        pcProgress = minOf(knownPc, pcMax)
+                        val rem = parsedSearchDailyPoints - (mobileProgress + pcProgress)
+                        if (rem > 0) {
+                            if (mobileProgress < mobileMax) {
+                                val addMob = minOf(rem, mobileMax - mobileProgress)
+                                mobileProgress += addMob
                             }
+                            val rem2 = parsedSearchDailyPoints - (mobileProgress + pcProgress)
+                            if (rem2 > 0 && pcProgress < pcMax) {
+                                pcProgress += minOf(rem2, pcMax - pcProgress)
+                            }
+                        }
+                    } else if (knownMob > 0) {
+                        mobileProgress = minOf(maxOf(knownMob, minOf(parsedSearchDailyPoints, mobileMax)), mobileMax)
+                        pcProgress = minOf(maxOf(0, parsedSearchDailyPoints - mobileProgress), pcMax)
+                    } else if (knownPc > 0) {
+                        pcProgress = minOf(maxOf(knownPc, minOf(parsedSearchDailyPoints, pcMax)), pcMax)
+                        mobileProgress = minOf(maxOf(0, parsedSearchDailyPoints - pcProgress), mobileMax)
+                    } else {
+                        // Fallback an toàn khi chưa có breakdown và chưa có telemetry:
+                        if (parsedSearchDailyPoints >= pcMax && pcMax > 0) {
+                            pcProgress = pcMax
+                            mobileProgress = minOf(parsedSearchDailyPoints - pcMax, mobileMax)
                         } else {
-                            pcProgress = minOf(parsedSearchDailyPoints, pcMax)
-                            mobileProgress = minOf(maxOf(0, parsedSearchDailyPoints - pcMax), mobileMax)
+                            // Khi parsedSearchDailyPoints < pcMax (ví dụ 60đ < 90đ):
+                            // TUYỆT ĐỐI không được gán trọn 60đ vào pcProgress và ép mobileProgress = 0!
+                            // Bảo lưu giá trị an toàn từ telemetry hoặc giữ 0 để enrich exact breakdown
+                            pcProgress = knownPc
+                            mobileProgress = knownMob
                         }
                     }
                 }
@@ -1645,7 +1673,8 @@ object RewardsBalanceExtractor {
                 nextResetTimestampMs = computeNextResetTimestampMs(),
                 cooldownEndTimestampMs = existing?.cooldownEndTimestampMs ?: 0L,
                 isRewardsUser = isRewardsUser,
-                hasExactCounters = (jsonPcProgress != null && jsonMobProgress != null)
+                hasExactCounters = breakdownFromHtml.isSuccess || (jsonPcProgress != null && jsonMobProgress != null),
+                pointsBreakdownJson = pointsBreakdownJson
             )
             if (!accountId.isNullOrBlank()) {
                 latestTelemetryMap[accountId] = result
@@ -2010,22 +2039,46 @@ object RewardsBalanceExtractor {
                     rawCombined
                 }
 
-                val existingMob = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it]?.mobileProgress } ?: 0
-                val existingPc = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it]?.pcProgress } ?: 0
+                val existing = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it] }
+                val existingMob = existing?.mobileProgress ?: 0
+                val existingPc = existing?.pcProgress ?: 0
 
                 if (level == 1) {
                     pcProgress = minOf(effectiveCombined, effPcMax)
                     mobileProgress = 0
                 } else {
-                    if (existingMob > 0) {
+                    if (existingMob > 0 && existingPc > 0) {
                         mobileProgress = minOf(existingMob, effMobMax)
+                        pcProgress = minOf(existingPc, effPcMax)
+                        val rem = effectiveCombined - (mobileProgress + pcProgress)
+                        if (rem > 0) {
+                            if (mobileProgress < effMobMax) {
+                                val addMob = minOf(rem, effMobMax - mobileProgress)
+                                mobileProgress += addMob
+                            }
+                            val rem2 = effectiveCombined - (mobileProgress + pcProgress)
+                            if (rem2 > 0 && pcProgress < effPcMax) {
+                                pcProgress += minOf(rem2, effPcMax - pcProgress)
+                            }
+                        }
+                    } else if (existingMob > 0) {
+                        mobileProgress = minOf(maxOf(existingMob, minOf(effectiveCombined, effMobMax)), effMobMax)
                         pcProgress = minOf(maxOf(0, effectiveCombined - mobileProgress), effPcMax)
                     } else if (existingPc > 0) {
-                        pcProgress = minOf(existingPc, effPcMax)
+                        pcProgress = minOf(maxOf(existingPc, minOf(effectiveCombined, effPcMax)), effPcMax)
                         mobileProgress = minOf(maxOf(0, effectiveCombined - pcProgress), effMobMax)
                     } else {
-                        pcProgress = minOf(effectiveCombined, effPcMax)
-                        mobileProgress = minOf(maxOf(0, effectiveCombined - effPcMax), effMobMax)
+                        // Fallback an toàn khi chưa có breakdown và chưa có telemetry:
+                        if (effectiveCombined >= effPcMax && effPcMax > 0) {
+                            pcProgress = effPcMax
+                            mobileProgress = minOf(effectiveCombined - effPcMax, effMobMax)
+                        } else {
+                            // Khi effectiveCombined < effPcMax (ví dụ 60đ < 90đ):
+                            // TUYỆT ĐỐI không được gán trọn 60đ vào pcProgress và ép mobileProgress = 0!
+                            // Bảo lưu giá trị hiện tại từ telemetry (nếu có) hoặc giữ 0 để enrich exact breakdown
+                            pcProgress = existingPc
+                            mobileProgress = existingMob
+                        }
                     }
                 }
             }
@@ -2269,7 +2322,8 @@ object RewardsBalanceExtractor {
                 redeemGoalMax = redeemGoalMax,
                 isAccountSuspended = isAccountSuspended,
                 isRewardsUser = isRewardsUser,
-                hasExactCounters = (pcObj != null && mobObj != null) || (dailyPoint != null && dailyPoint.length() > 0)
+                hasExactCounters = (pcObj != null && mobObj != null) || (pcProgress > 0 && mobileProgress > 0),
+                pointsBreakdownJson = (accountId?.takeIf { it.isNotBlank() } ?: email?.takeIf { it.isNotBlank() })?.let { latestTelemetryMap[it]?.pointsBreakdownJson }
             )
             if (!accountId.isNullOrBlank()) {
                 latestTelemetryMap[accountId] = result
@@ -2359,16 +2413,199 @@ object RewardsBalanceExtractor {
         val edgeProgress: Int = 0,
         val edgeMax: Int = 0,
         val offersPoints: Int = 0,
+        val pointsBreakdownJson: String? = null,
         val isSuccess: Boolean = false
     )
 
+    fun buildSanitizedBreakdownJson(
+        pcProgress: Int,
+        pcMax: Int,
+        mobileProgress: Int,
+        mobileMax: Int,
+        edgeProgress: Int,
+        edgeMax: Int,
+        offersPoints: Int,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        return JSONObject().apply {
+            put("desktopSearch", JSONObject().apply {
+                put("progress", pcProgress)
+                put("max", pcMax)
+            })
+            put("mobileSearch", JSONObject().apply {
+                put("progress", mobileProgress)
+                put("max", mobileMax)
+            })
+            put("edgeBonus", JSONObject().apply {
+                put("progress", edgeProgress)
+                put("max", edgeMax)
+            })
+            put("offers", JSONObject().apply {
+                put("progress", offersPoints)
+            })
+            put("totalSearchPoints", pcProgress + mobileProgress + edgeProgress)
+            put("totalEarnedToday", pcProgress + mobileProgress + edgeProgress + offersPoints)
+            put("timestamp", timestamp)
+        }.toString()
+    }
+
+    fun prepareBreakdownCookies(cookiesInput: String?): String {
+        if (cookiesInput.isNullOrBlank()) return ""
+        val trimmed = cookiesInput.trim()
+        val cookieMap = linkedMapOf<String, String>()
+
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            try {
+                val json = JSONObject(trimmed)
+                val keys = json.keys()
+                while (keys.hasNext()) {
+                    val domainKey = keys.next()
+                    if (domainKey.contains("bing.com")) {
+                        val cStr = json.optString(domainKey, "")
+                        cStr.split(";").forEach { p ->
+                            val tp = p.trim()
+                            if (tp.isNotEmpty() && tp.contains("=")) {
+                                val k = tp.substringBefore("=").trim()
+                                val v = tp.substringAfter("=").trim()
+                                val isTransientNonce = k.startsWith(".MSA.Auth.Nonce.", ignoreCase = true) ||
+                                    k.startsWith(".MSA.Auth.Correlation.", ignoreCase = true)
+                                if (k.isNotEmpty() && !isTransientNonce) {
+                                    cookieMap[k] = v
+                                }
+                            }
+                        }
+                    }
+                }
+                val criticalTokens = listOf(
+                    "_U", "_RwBf", "KievRPSToken", "MUID", "SRCHUSR", "SRCHS",
+                    "NAP", "ANON", "MSPOK", "WLSSC", "RPSTAuth", "WSSO",
+                    ".MSA.Auth", "WLS", "RPSAuth", "MSPRequ"
+                )
+                for (tokenName in criticalTokens) {
+                    if (!cookieMap.containsKey(tokenName)) {
+                        val otherKeys = json.keys()
+                        while (otherKeys.hasNext()) {
+                            val fKey = otherKeys.next()
+                            val cStr = json.optString(fKey, "")
+                            cStr.split(";").forEach { p ->
+                                val tp = p.trim()
+                                if (tp.isNotEmpty() && tp.contains("=")) {
+                                    val k = tp.substringBefore("=").trim()
+                                    val v = tp.substringAfter("=").trim()
+                                    if (k.equals(tokenName, ignoreCase = true) && v.isNotBlank()) {
+                                        cookieMap[tokenName] = v
+                                    }
+                                }
+                            }
+                            if (cookieMap.containsKey(tokenName)) break
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
+        } else {
+            trimmed.split(";").forEach { p ->
+                val tp = p.trim()
+                if (tp.isNotEmpty() && tp.contains("=")) {
+                    val k = tp.substringBefore("=").trim()
+                    val v = tp.substringAfter("=").trim()
+                    val isTransientNonce = k.startsWith(".MSA.Auth.Nonce.", ignoreCase = true) ||
+                        k.startsWith(".MSA.Auth.Correlation.", ignoreCase = true)
+                    if (k.isNotEmpty() && !isTransientNonce) {
+                        cookieMap[k] = v
+                    }
+                }
+            }
+        }
+        return cookieMap.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    private fun parseBreakdownFromEmbeddedJson(html: String): PointsBreakdownResult? {
+        val scriptPattern = Regex("""<script[^>]*>([\s\S]*?)</script>""", RegexOption.IGNORE_CASE)
+        for (match in scriptPattern.findAll(html)) {
+            val scriptContent = match.groupValues[1]
+            if (scriptContent.contains("userStatus") || scriptContent.contains("counters")) {
+                val jsonMatch = Regex("""(?:var\s+(?:dashboard|userStatus|pointSummary)\s*=\s*|\buserStatus\s*:\s*)(\{[\s\S]*?\})(?:;|\s*</script>)""", RegexOption.IGNORE_CASE).find(scriptContent)
+                val jsonStr = jsonMatch?.groupValues?.get(1)
+                if (!jsonStr.isNullOrBlank()) {
+                    try {
+                        val obj = JSONObject(jsonStr)
+                        val status = obj.optJSONObject("userStatus") ?: obj
+                        val counters = status.optJSONObject("counters") ?: status
+                        val pcObj = counters.optJSONArray("pcSearch")?.optJSONObject(0)
+                            ?: counters.optJSONObject("pcSearch")
+                        val mobObj = counters.optJSONArray("mobileSearch")?.optJSONObject(0)
+                            ?: counters.optJSONObject("mobileSearch")
+                        val edgeObj = counters.optJSONArray("bonusSearch")?.optJSONObject(0)
+                            ?: counters.optJSONObject("bonusSearch")
+                            ?: counters.optJSONArray("edgeSearch")?.optJSONObject(0)
+                        val otherObj = counters.optJSONArray("otherActivities")?.optJSONObject(0)
+                            ?: counters.optJSONObject("otherActivities")
+
+                        if (pcObj != null || mobObj != null) {
+                            val pcProg = pcObj?.optInt("pointProgress", 0) ?: 0
+                            val pcMax = pcObj?.optInt("pointProgressMax", 90) ?: 90
+                            val mobProg = mobObj?.optInt("pointProgress", 0) ?: 0
+                            val mobMax = mobObj?.optInt("pointProgressMax", 60) ?: 60
+                            val edgeProg = edgeObj?.optInt("pointProgress", 0) ?: 0
+                            val edgeMax = edgeObj?.optInt("pointProgressMax", 0) ?: 0
+                            val offers = otherObj?.optInt("pointProgress", 0) ?: 0
+
+                            val sanitizedJson = buildSanitizedBreakdownJson(
+                                pcProgress = pcProg,
+                                pcMax = pcMax,
+                                mobileProgress = mobProg,
+                                mobileMax = mobMax,
+                                edgeProgress = edgeProg,
+                                edgeMax = edgeMax,
+                                offersPoints = offers
+                            )
+                            return PointsBreakdownResult(
+                                pcProgress = pcProg,
+                                pcMax = pcMax,
+                                mobileProgress = mobProg,
+                                mobileMax = mobMax,
+                                edgeProgress = edgeProg,
+                                edgeMax = edgeMax,
+                                offersPoints = offers,
+                                pointsBreakdownJson = sanitizedJson,
+                                isSuccess = true
+                            )
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+        return null
+    }
+
     fun parsePointsBreakdownHtml(html: String): PointsBreakdownResult {
         if (html.isBlank()) return PointsBreakdownResult()
+
+        val jsonBreakdown = parseBreakdownFromEmbeddedJson(html)
+        if (jsonBreakdown != null && jsonBreakdown.isSuccess) {
+            return jsonBreakdown
+        }
+
         val cleanText = html.replace(Regex("<[^>]+>"), " ")
-        val pcMatch = Regex("""(?:Desktop\s*(?:Bing)?\s*search|PC\s*search|tìm\s*kiếm\s*trên\s*(?:máy\s*tính|pc))[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
-        val mobMatch = Regex("""(?:Mobile\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:thiết\s*bị\s*)?di\s*động)[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
-        val edgeMatch = Regex("""(?:Microsoft\s*Edge\s*bonus|Edge\s*bonus|thưởng\s*edge)[\s\S]{0,120}?(\d+)\s*[/／]\s*(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
-        val offersMatch = Regex("""(?:Offers?|Other\s*activities|hoạt\s*động\s*khác)[\s\S]{0,120}?(\d+)""", RegexOption.IGNORE_CASE).find(cleanText)
+        val pcMatch = Regex(
+            """(?:Desktop\s*(?:Bing)?\s*search|PC\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:máy\s*tính|pc))[\s\S]{0,150}?(\d+)\s*(?:[/／]|of|trên|out\s+of)\s*(\d+)""",
+            RegexOption.IGNORE_CASE
+        ).find(cleanText)
+
+        val mobMatch = Regex(
+            """(?:Mobile\s*(?:Bing)?\s*search|tìm\s*kiếm\s*trên\s*(?:thiết\s*bị\s*)?di\s*động)[\s\S]{0,150}?(\d+)\s*(?:[/／]|of|trên|out\s+of)\s*(\d+)""",
+            RegexOption.IGNORE_CASE
+        ).find(cleanText)
+
+        val edgeMatch = Regex(
+            """(?:Microsoft\s*Edge\s*bonus|Edge\s*bonus|thưởng\s*(?:trên\s*)?edge)[\s\S]{0,150}?(\d+)\s*(?:[/／]|of|trên|out\s+of)\s*(\d+)""",
+            RegexOption.IGNORE_CASE
+        ).find(cleanText)
+
+        val offersMatch = Regex(
+            """(?:Offers?(?:\s*(?:and|&)\s*other\s*activities)?|Other\s*(?:activities|offers)|(?:ưu\s*đãi\s*(?:và|&)\s*)?hoạt\s*động\s*khác)[\s\S]{0,150}?(\d+)""",
+            RegexOption.IGNORE_CASE
+        ).find(cleanText)
 
         val pcProg = pcMatch?.groupValues?.get(1)?.toIntOrNull()
         val pcMax = pcMatch?.groupValues?.get(2)?.toIntOrNull()
@@ -2379,15 +2616,35 @@ object RewardsBalanceExtractor {
         val offers = offersMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
 
         val hasFound = pcProg != null || mobProg != null
+        if (!hasFound) return PointsBreakdownResult()
+
+        val finalPcProg = pcProg ?: 0
+        val finalPcMax = pcMax ?: 90
+        val finalMobProg = mobProg ?: 0
+        val finalMobMax = mobMax ?: 60
+        val finalEdgeProg = edgeProg ?: 0
+        val finalEdgeMax = edgeMax ?: 0
+
+        val sanitizedJson = buildSanitizedBreakdownJson(
+            pcProgress = finalPcProg,
+            pcMax = finalPcMax,
+            mobileProgress = finalMobProg,
+            mobileMax = finalMobMax,
+            edgeProgress = finalEdgeProg,
+            edgeMax = finalEdgeMax,
+            offersPoints = offers
+        )
+
         return PointsBreakdownResult(
-            pcProgress = pcProg ?: 0,
-            pcMax = pcMax ?: 90,
-            mobileProgress = mobProg ?: 0,
-            mobileMax = mobMax ?: 60,
-            edgeProgress = edgeProg ?: 0,
-            edgeMax = edgeMax ?: 0,
+            pcProgress = finalPcProg,
+            pcMax = finalPcMax,
+            mobileProgress = finalMobProg,
+            mobileMax = finalMobMax,
+            edgeProgress = finalEdgeProg,
+            edgeMax = finalEdgeMax,
             offersPoints = offers,
-            isSuccess = hasFound
+            pointsBreakdownJson = sanitizedJson,
+            isSuccess = true
         )
     }
 
@@ -2396,40 +2653,74 @@ object RewardsBalanceExtractor {
         userAgent: String,
         proxyUrl: String? = null
     ): PointsBreakdownResult {
-        var connection: HttpURLConnection? = null
-        return try {
-            val url = URL("https://rewards.bing.com/pointsbreakdown?_ts=${System.currentTimeMillis()}")
-            val proxy = parseProxy(proxyUrl)
-            connection = (url.openConnection(proxy) as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 6000
-                readTimeout = 6000
-                instanceFollowRedirects = true
-                useCaches = false
-                if (bingCookies.isNotBlank()) {
-                    setRequestProperty("Cookie", bingCookies)
+        if (bingCookies.isBlank()) return PointsBreakdownResult()
+        val effectiveCookies = prepareBreakdownCookies(bingCookies)
+        if (effectiveCookies.isBlank()) return PointsBreakdownResult()
+        val effectiveUa = if (userAgent.isNotBlank()) userAgent else DEFAULT_DESKTOP_EDGE_UA
+        val proxy = parseProxy(proxyUrl)
+        var currentUrl = "https://rewards.bing.com/status/pointsbreakdown?_ts=${System.currentTimeMillis()}"
+        var redirectCount = 0
+
+        while (redirectCount < 3) {
+            var connection: HttpURLConnection? = null
+            try {
+                val url = URL(currentUrl)
+                connection = (url.openConnection(proxy) as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 8000
+                    readTimeout = 8000
+                    instanceFollowRedirects = false
+                    useCaches = false
+                    if (effectiveCookies.isNotBlank()) {
+                        setRequestProperty("Cookie", effectiveCookies)
+                    }
+                    setRequestProperty("User-Agent", effectiveUa)
+                    setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+                    setRequestProperty("Accept-Language", "en-US,en;q=0.9,vi;q=0.8")
+                    setRequestProperty("Accept-Encoding", "gzip, deflate")
+                    setRequestProperty("Referer", "https://rewards.bing.com/")
+                    setRequestProperty("Sec-Fetch-Dest", "document")
+                    setRequestProperty("Sec-Fetch-Mode", "navigate")
+                    setRequestProperty("Sec-Fetch-Site", "same-origin")
                 }
-                setRequestProperty("User-Agent", userAgent)
-                setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                setRequestProperty("Accept-Encoding", "gzip, deflate")
-                setRequestProperty("Referer", "https://rewards.bing.com/")
-            }
-            val responseCode = connection.responseCode
-            if (responseCode in 200..299) {
-                val inputStream = if ("gzip".equals(connection.contentEncoding, ignoreCase = true)) {
-                    java.util.zip.GZIPInputStream(connection.inputStream)
+
+                val responseCode = connection.responseCode
+                if (responseCode in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                    connection.disconnect()
+                    if (!location.isNullOrBlank()) {
+                        if (location.contains("login.live.com") || location.contains("login.microsoftonline.com")) {
+                            return PointsBreakdownResult()
+                        }
+                        currentUrl = if (location.startsWith("http")) location else URL(URL(currentUrl), location).toString()
+                        redirectCount++
+                        continue
+                    }
+                    return PointsBreakdownResult()
+                }
+
+                if (responseCode in 200..299) {
+                    val inputStream = if ("gzip".equals(connection.contentEncoding, ignoreCase = true)) {
+                        java.util.zip.GZIPInputStream(connection.inputStream)
+                    } else {
+                        connection.inputStream
+                    }
+                    val html = inputStream.bufferedReader().use { it.readText() }
+                    return parsePointsBreakdownHtml(html)
+                } else if (responseCode == 404 && currentUrl.contains("/status/pointsbreakdown")) {
+                    connection.disconnect()
+                    currentUrl = "https://rewards.bing.com/pointsbreakdown?_ts=${System.currentTimeMillis()}"
+                    redirectCount++
+                    continue
                 } else {
-                    connection.inputStream
+                    return PointsBreakdownResult()
                 }
-                val html = inputStream.bufferedReader().use { it.readText() }
-                parsePointsBreakdownHtml(html)
-            } else {
-                PointsBreakdownResult()
+            } catch (_: Exception) {
+                return PointsBreakdownResult()
+            } finally {
+                connection?.disconnect()
             }
-        } catch (_: Exception) {
-            PointsBreakdownResult()
-        } finally {
-            connection?.disconnect()
         }
+        return PointsBreakdownResult()
     }
 }

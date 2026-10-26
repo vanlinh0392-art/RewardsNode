@@ -21,7 +21,7 @@ object AutomationEngine {
      * - Khoảng trắng (spaces): 120-200ms
      * - Tỉ lệ 6% giả lập gõ nhầm (typo) + xóa lùi (backspace) rồi gõ lại
      */
-    fun createHumanTypingScript(query: String, searchUrl: String? = null): String {
+    fun createHumanTypingScript(query: String, searchUrl: String? = null, isDesktop: Boolean = false): String {
         val sanitizedQuery = query
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
@@ -39,7 +39,11 @@ object AutomationEngine {
         val urlExpression = if (sanitizedSearchUrl != null) {
             "'$sanitizedSearchUrl'"
         } else {
-            "'https://www.bing.com/search?q=' + encodeURIComponent(text)"
+            if (isDesktop) {
+                "'https://www.bing.com/search?q=' + encodeURIComponent(text) + '&form=QBLH&pc=U316'"
+            } else {
+                "'https://www.bing.com/search?q=' + encodeURIComponent(text)"
+            }
         }
 
         return """
@@ -136,6 +140,10 @@ object AutomationEngine {
                         } catch(e) {}
 
                         setTimeout(function() {
+                            ${if (isDesktop) """
+                            // Khi thực thi tìm kiếm PC, đảm bảo điều hướng URL mang form=QBLH&pc=U316 trực tiếp thay vì click submit form mobile của Bing
+                            window.location.href = searchUrl;
+                            """.trimIndent() else """
                             var form = document.querySelector('form#sb_form') || document.getElementById('sb_form') || document.querySelector('form[action*="search"]') || (input ? input.form : null);
                             var btn = document.getElementById('sb_form_go') || document.querySelector('button[type="submit"]') || document.querySelector('label[for="sb_form_go"]') || document.querySelector('.search.icon');
                             
@@ -160,6 +168,7 @@ object AutomationEngine {
                             } else {
                                 window.location.href = fallbackUrl;
                             }
+                            """.trimIndent()}
                         }, Math.floor(Math.random() * (700 - 400 + 1)) + 400);
                     }
                 }

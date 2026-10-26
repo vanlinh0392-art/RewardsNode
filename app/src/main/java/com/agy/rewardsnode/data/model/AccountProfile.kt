@@ -42,7 +42,8 @@ data class AccountProfile(
     var dapiAccessToken: String? = null,
     var dapiRefreshToken: String? = null,
     var dapiTokenExpiryTimestampMs: Long = 0L,
-    @Transient var cookieExpired: Boolean = false // Runtime flag, not persisted to DB
+    @Transient var cookieExpired: Boolean = false, // Runtime flag, not persisted to DB
+    @Transient var pointsBreakdownJson: String? = null // Sanitized breakdown JSON
 ) {
     fun isAllMaxedOutToday(todayStr: String): Boolean {
         if (lastActiveDate != todayStr) {
@@ -100,24 +101,44 @@ data class AccountProfile(
             if (wasSameDay) maxOf(this.pointsEarnedToday, calcEarned) else calcEarned
         }
         if (balance.pcMax > 0) {
-            val isAuthoritativeFlyout = balance.source.startsWith("flyout_http") || balance.source.contains("breakdown")
-            if (!(wasSameDay && !isAuthoritativeFlyout && pcMax == balance.pcMax && pcProgress > balance.pcProgress)) {
-                // Nếu nguồn không phải authoritative breakdown gửi mobileProgress = 0 và gộp điểm mobile vào pcProgress
-                if (wasSameDay && this.mobileProgress > 0 && balance.mobileProgress == 0 && balance.pcProgress > this.pcProgress && !balance.source.contains("breakdown")) {
-                    pcProgress = maxOf(this.pcProgress, balance.pcProgress - this.mobileProgress)
-                } else {
+            val isAuthoritativeBreakdown = balance.source.contains("breakdown") || balance.hasExactCounters
+            if (isAuthoritativeBreakdown) {
+                pcProgress = balance.pcProgress
+            } else if (wasSameDay) {
+                if (this.mobileProgress > 0 && balance.mobileProgress == 0 && !balance.source.contains("breakdown")) {
+                    // Nguồn không có breakdown có thể đã gộp điểm mobile vào pcProgress
+                    // Nếu this.pcProgress == 0: trừ đi mobile đã biết (ví dụ 90 - 60 = 30, hoặc 60 - 60 = 0)
+                    // Nếu this.pcProgress > 0: bảo toàn tiến độ PC đã có bằng maxOf(this.pcProgress, balance.pcProgress - this.mobileProgress)
+                    val adjustedPc = maxOf(0, balance.pcProgress - this.mobileProgress)
+                    pcProgress = if (this.pcProgress > 0) maxOf(this.pcProgress, adjustedPc) else adjustedPc
+                } else if (balance.source.startsWith("flyout_http")) {
+                    // Authoritative flyout khi không bị gộp mobile (ví dụ level 1 hoặc có mobile)
                     pcProgress = balance.pcProgress
+                } else if (balance.pcProgress > 0) {
+                    pcProgress = maxOf(this.pcProgress, balance.pcProgress)
                 }
+            } else {
+                pcProgress = balance.pcProgress
             }
             pcMax = balance.pcMax
         }
         if (balance.mobileMax > 0) {
             mobileMax = balance.mobileMax
-            val isExact = balance.source.contains("breakdown") || balance.hasExactCounters
-            mobileProgress = if (wasSameDay && !isExact) maxOf(mobileProgress, balance.mobileProgress) else balance.mobileProgress
+            val isAuthoritativeBreakdown = balance.source.contains("breakdown") || balance.hasExactCounters
+            if (isAuthoritativeBreakdown) {
+                mobileProgress = balance.mobileProgress
+            } else if (balance.mobileProgress > 0) {
+                mobileProgress = if (wasSameDay) maxOf(this.mobileProgress, balance.mobileProgress) else balance.mobileProgress
+            } else if (!wasSameDay) {
+                mobileProgress = 0
+            }
+            // Nếu wasSameDay và balance.mobileProgress == 0: duy trì this.mobileProgress (monotonic preservation)
         } else if (balance.source.startsWith("flyout_http") && level < 2) {
             mobileMax = balance.mobileMax
             mobileProgress = balance.mobileProgress
+        }
+        if (!balance.pointsBreakdownJson.isNullOrBlank()) {
+            this.pointsBreakdownJson = balance.pointsBreakdownJson
         }
         if (balance.edgeMax > 0) {
             edgeMax = balance.edgeMax

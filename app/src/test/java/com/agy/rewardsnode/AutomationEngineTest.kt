@@ -53,6 +53,18 @@ class AutomationEngineTest {
     }
 
     @Test
+    fun testHumanTypingScript_DesktopDirectNavigation() {
+        val query = "tin tức kinh tế 2026"
+        val pcUrl = "https://www.bing.com/search?q=tin+t%E1%BB%A9c+kinh+t%E1%BA%BF+2026&form=QBLH&pc=U316"
+        val script = AutomationEngine.createHumanTypingScript(query, pcUrl, isDesktop = true)
+
+        assertTrue("Script PC search phải điều hướng trực tiếp bằng window.location.href = searchUrl", script.contains("window.location.href = searchUrl"))
+        assertTrue("Script PC search phải chứa form=QBLH", script.contains("form=QBLH"))
+        assertTrue("Script PC search phải chứa pc=U316", script.contains("pc=U316"))
+        org.junit.Assert.assertFalse("Script PC search không được click nút submit mobile", script.contains("btn.click()"))
+    }
+
+    @Test
     fun testSmoothScrollScript() {
         val script = AutomationEngine.createSmoothScrollScript()
         assertTrue(script.contains("scrollBy"))

@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import android.webkit.*
 import android.view.View
 import com.agy.rewardsnode.App
@@ -427,7 +428,12 @@ class RewardsForegroundService : Service() {
 
             val isDesktop = phase.isDesktop
             val preset = FingerprintEngine.getEdgePresetForAccount(account.id, isDesktop)
-            webView.settings.userAgentString = preset.userAgent
+            webView.settings.apply {
+                userAgentString = preset.userAgent
+                useWideViewPort = isDesktop
+                loadWithOverviewMode = isDesktop
+            }
+            FingerprintEngine.applyUserAgentMetadata(webView, preset, isDesktop)
 
             // Đo và layout WebView theo kích thước thực tế
             val w = if (isDesktop) 1920 else preset.screenWidth
@@ -437,6 +443,12 @@ class RewardsForegroundService : Service() {
                 View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY)
             )
             webView.layout(0, 0, w, h)
+
+            if (isDesktop) {
+                // Tẩy cookie layout di động SRCHHPGUSR khi switch sang PC search
+                clearMobileLayoutCookies()
+                vlogManager.logDom("Đã tẩy cookie layout di động SRCHHPGUSR & cấu hình WebView Desktop (1920x1080)", account = account.email)
+            }
 
             // Tiêm cookie xác thực Edge
             CookieManager.getInstance().setCookie("https://www.bing.com", EDGE_V_COOKIE)
@@ -501,7 +513,7 @@ class RewardsForegroundService : Service() {
                     if (hasInjectedTyping || isCompleted.get()) return
                     hasInjectedTyping = true
                     vlogManager.logDom("Tiêm Human Typing Script gõ từ khóa: \"$keyword\"", account = account.email)
-                    val script = AutomationEngine.createHumanTypingScript(keyword, searchUrl)
+                    val script = AutomationEngine.createHumanTypingScript(keyword, searchUrl, isDesktop)
                     targetView.evaluateJavascript(script, null)
                 }
 
@@ -989,13 +1001,25 @@ class RewardsForegroundService : Service() {
         val runningAccountIdFlow = MutableStateFlow<String?>(null)
         @Volatile var serviceStartElapsedRealtime: Long = 0L
 
+        fun clearMobileLayoutCookies() {
+            try {
+                val cookieManager = CookieManager.getInstance()
+                cookieManager.setCookie("https://www.bing.com", "SRCHHPGUSR=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.bing.com; path=/")
+                cookieManager.setCookie("https://www.bing.com", "SRCHHPGUSR=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=www.bing.com; path=/")
+                cookieManager.setCookie("https://www.bing.com", "SRCHHPGUSR=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/")
+                cookieManager.flush()
+            } catch (e: Throwable) {
+                Log.w("RewardsService", "Lỗi tẩy cookie layout di động: ${e.message}")
+            }
+        }
+
         fun buildSearchUrl(keyword: String, phase: RewardsStateMachine.SearchPhase): String {
             val encodedKeyword = URLEncoder.encode(keyword, "UTF-8")
             return when (phase) {
-                RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+                RewardsStateMachine.SearchPhase.PHASE_1_PC -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH&pc=U316"
                 RewardsStateMachine.SearchPhase.PHASE_2_MOBILE -> "https://www.bing.com/search?q=$encodedKeyword&form=STARTR&PC=EMMX01"
                 RewardsStateMachine.SearchPhase.PHASE_3_EDGE -> "https://www.bing.com/search?q=$encodedKeyword&form=MA13FW&pc=EUPH"
-                else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH"
+                else -> "https://www.bing.com/search?q=$encodedKeyword&form=QBLH&pc=U316"
             }
         }
 

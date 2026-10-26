@@ -1112,6 +1112,9 @@ class MainActivity : Activity() {
             database = database,
             onRefreshCompleted = { account ->
                 Toast.makeText(this@MainActivity, "Đã cập nhật điểm: ${account.email}", Toast.LENGTH_SHORT).show()
+            },
+            onAccountDetailsClicked = { account ->
+                AccountBreakdownDialog(this@MainActivity, account).show()
             }
         )
 

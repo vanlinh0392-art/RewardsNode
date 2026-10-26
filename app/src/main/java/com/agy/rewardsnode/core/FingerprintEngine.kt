@@ -397,6 +397,47 @@ object FingerprintEngine {
     }
 
     /**
+     * Áp dụng WebSettingsCompat.setUserAgentMetadata (nếu WebKit hỗ trợ) hoặc cấu hình WebView Desktop properties.
+     * Sử dụng Reflection an toàn để tương thích 100% với Pure SDK Kotlinc CLI và AndroidX WebKit.
+     */
+    fun applyUserAgentMetadata(webView: WebView, preset: FingerprintPreset, isDesktop: Boolean) {
+        try {
+            val featureClass = Class.forName("androidx.webkit.WebViewFeature")
+            val isSupportedMethod = featureClass.getMethod("isFeatureSupported", String::class.java)
+            val isSupported = isSupportedMethod.invoke(null, "USER_AGENT_METADATA") as? Boolean
+            if (isSupported == true) {
+                val builderClass = Class.forName("androidx.webkit.UserAgentMetadata\$Builder")
+                val builderInstance = builderClass.getDeclaredConstructor().newInstance()
+
+                val setMobileMethod = builderClass.getMethod("setMobile", Boolean::class.javaPrimitiveType)
+                setMobileMethod.invoke(builderInstance, !isDesktop)
+
+                val platform = if (isDesktop) {
+                    if (preset.platform.contains("Mac")) "macOS" else "Windows"
+                } else {
+                    "Android"
+                }
+                val setPlatformMethod = builderClass.getMethod("setPlatform", String::class.java)
+                setPlatformMethod.invoke(builderInstance, platform)
+
+                val buildMethod = builderClass.getMethod("build")
+                val metadata = buildMethod.invoke(builderInstance)
+
+                val compatClass = Class.forName("androidx.webkit.WebSettingsCompat")
+                val setMetadataMethod = compatClass.getMethod(
+                    "setUserAgentMetadata",
+                    android.webkit.WebSettings::class.java,
+                    Class.forName("androidx.webkit.UserAgentMetadata")
+                )
+                setMetadataMethod.invoke(null, webView.settings, metadata)
+                Log.d("FingerprintEngine", "Đã cấu hình setUserAgentMetadata(mobile=${!isDesktop}, platform=$platform)")
+            }
+        } catch (_: Throwable) {
+            // Thiết bị hoặc WebKit không hỗ trợ, tự động fallback an toàn
+        }
+    }
+
+    /**
      * Lọc bỏ header X-Requested-With khỏi header map (Tầng 2).
      */
     fun sanitizeHeaders(headers: Map<String, String>?): Map<String, String> {
@@ -545,7 +586,17 @@ object FingerprintEngine {
                         }
                     } catch (e4) {}
 
-                    ${if (!isDesktop) """
+                    ${if (isDesktop) """
+                    // 4b. Ghi đè innerWidth, innerHeight & devicePixelRatio trên Desktop
+                    try {
+                        var getInnerW = cloak(function() { return 1920; }, 'get innerWidth', 0);
+                        var getInnerH = cloak(function() { return 1080; }, 'get innerHeight', 0);
+                        var getDpr = cloak(function() { return 1.0; }, 'get devicePixelRatio', 0);
+                        Object.defineProperty(window, 'innerWidth', { get: getInnerW, configurable: true });
+                        Object.defineProperty(window, 'innerHeight', { get: getInnerH, configurable: true });
+                        Object.defineProperty(window, 'devicePixelRatio', { get: getDpr, configurable: true });
+                    } catch (eDim) {}
+                    """.trimIndent() else """
                     // 4b. Ghi đè innerWidth, innerHeight & devicePixelRatio trên Mobile
                     try {
                         var getInnerW = cloak(function() { return ${preset.screenWidth}; }, 'get innerWidth', 0);
@@ -555,7 +606,7 @@ object FingerprintEngine {
                         Object.defineProperty(window, 'innerHeight', { get: getInnerH, configurable: true });
                         Object.defineProperty(window, 'devicePixelRatio', { get: getDpr, configurable: true });
                     } catch (eDim) {}
-                    """.trimIndent() else ""}
+                    """.trimIndent()}
 
                     // 5. Ghi đè userAgent & appVersion
                     try {
@@ -644,7 +695,59 @@ object FingerprintEngine {
                         }
                     } catch (e6) {}
 
-                    ${if (!isDesktop) """
+                    ${if (isDesktop) """
+                    // 7. Giả lập Desktop: maxTouchPoints = 0, xóa ontouchstart, xóa TouchEvent, giả lập Mouse PointerEvent
+                    try {
+                        var getTouch = cloak(function() { return 0; }, 'get maxTouchPoints', 0);
+                        Object.defineProperty(navigator, 'maxTouchPoints', {
+                            get: getTouch,
+                            configurable: true
+                        });
+                        if (typeof Navigator !== 'undefined' && Navigator.prototype) {
+                            Object.defineProperty(Navigator.prototype, 'maxTouchPoints', {
+                                get: getTouch,
+                                configurable: true
+                            });
+                        }
+                        try {
+                            delete window.ontouchstart;
+                        } catch (eDelTouch) {
+                            window.ontouchstart = undefined;
+                        }
+                        if ('ontouchstart' in window) {
+                            try {
+                                Object.defineProperty(window, 'ontouchstart', {
+                                    get: cloak(function() { return undefined; }, 'get ontouchstart', 0),
+                                    configurable: true
+                                });
+                            } catch (eDef) {}
+                        }
+                        try {
+                            delete window.TouchEvent;
+                        } catch (eDelTe) {}
+                        // Bổ sung giả lập Mouse PointerEvent thay vì TouchEvent
+                        if (typeof PointerEvent !== 'undefined') {
+                            var origPointerEvent = window.PointerEvent;
+                            var patchedPointerEvent = function PointerEvent(type, params) {
+                                params = params || {};
+                                if (!params.pointerType) {
+                                    params.pointerType = 'mouse';
+                                }
+                                return new origPointerEvent(type, params);
+                            };
+                            cloak(patchedPointerEvent, 'PointerEvent', 1);
+                            try {
+                                patchedPointerEvent.prototype = origPointerEvent.prototype;
+                                window.PointerEvent = patchedPointerEvent;
+                            } catch (ePe) {}
+                        }
+                        // Tẩy cookie layout di động SRCHHPGUSR trong document.cookie
+                        try {
+                            document.cookie = "SRCHHPGUSR=; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.bing.com; path=/";
+                            document.cookie = "SRCHHPGUSR=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/";
+                        } catch (eCk) {}
+                    } catch (eDesktopTouch) {}
+                    """.trimIndent() else """
                     // 7. Bảo vệ maxTouchPoints, ontouchstart & TouchEvent/PointerEvent trên Mobile
                     try {
                         var getTouch = cloak(function() { return 5; }, 'get maxTouchPoints', 0);
@@ -666,7 +769,7 @@ object FingerprintEngine {
                             window.PointerEvent = function PointerEvent() {};
                         }
                     } catch (eTouch) {}
-                    """.trimIndent() else ""}
+                    """.trimIndent()}
 
                     // 8. Bảo vệ đối tượng window.chrome
                     try {

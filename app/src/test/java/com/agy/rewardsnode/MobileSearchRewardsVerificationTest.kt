@@ -63,11 +63,19 @@ class MobileSearchRewardsVerificationTest {
         assertTrue("Stealth script Mobile phải giả lập TouchEvent", mobileScript.contains("TouchEvent"))
         assertTrue("Stealth script Mobile phải giả lập PointerEvent", mobileScript.contains("PointerEvent"))
 
-        // Kiểm tra đối ứng: Desktop Stealth Script không chứa innerWidth override
+        // Kiểm tra đối ứng: Desktop Stealth Script ghi đè chuẩn Desktop 1920x1080, dpr=1.0, maxTouchPoints=0, delete ontouchstart
         val desktopPreset = FingerprintEngine.DESKTOP_EDGE[0]
         val desktopScript = FingerprintEngine.createStealthScript(desktopPreset, isDesktop = true)
-        assertFalse("Desktop stealth script không được ghi đè innerWidth", desktopScript.contains("innerWidth"))
-        assertFalse("Desktop stealth script không được ghi đè devicePixelRatio", desktopScript.contains("devicePixelRatio"))
+        assertTrue("Desktop stealth script phải ghi đè innerWidth", desktopScript.contains("innerWidth"))
+        assertTrue("Desktop stealth script phải đặt innerWidth = 1920", desktopScript.contains("1920"))
+        assertTrue("Desktop stealth script phải đặt innerHeight = 1080", desktopScript.contains("1080"))
+        assertTrue("Desktop stealth script phải ghi đè devicePixelRatio", desktopScript.contains("devicePixelRatio"))
+        assertTrue("Desktop stealth script phải đặt devicePixelRatio = 1.0", desktopScript.contains("1.0"))
+        assertTrue("Desktop stealth script phải ghi đè maxTouchPoints", desktopScript.contains("maxTouchPoints"))
+        assertTrue("Desktop stealth script maxTouchPoints phải trả về 0", desktopScript.contains("return 0;"))
+        assertTrue("Desktop stealth script phải xóa bỏ delete window.ontouchstart", desktopScript.contains("delete window.ontouchstart"))
+        assertTrue("Desktop stealth script phải bổ sung giả lập Mouse PointerEvent", desktopScript.contains("pointerType = 'mouse'"))
+        assertTrue("Desktop stealth script phải tẩy cookie di động SRCHHPGUSR", desktopScript.contains("SRCHHPGUSR=; expires="))
     }
 
     /**
@@ -82,6 +90,7 @@ class MobileSearchRewardsVerificationTest {
 
         val pcUrl = RewardsForegroundService.buildSearchUrl("tin tức công nghệ", SearchPhase.PHASE_1_PC)
         assertTrue("URL PC Search phải chứa form=QBLH", pcUrl.contains("form=QBLH"))
+        assertTrue("URL PC Search phải chứa pc=U316", pcUrl.contains("pc=U316"))
         assertFalse("URL PC Search không được chứa STARTR", pcUrl.contains("form=STARTR"))
 
         val edgeUrl = RewardsForegroundService.buildSearchUrl("microsoft rewards", SearchPhase.PHASE_3_EDGE)
